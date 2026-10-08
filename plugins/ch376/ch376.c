@@ -11,7 +11,8 @@
 /*
  Changes:
 
- 23.11.2025 - Jede: add usb devices management
+ 02.12.2025 - Jede: Add config ch376 file to specify connected device
+ 23.11.2025 - Jede: Add usb devices management
  10.06.2025 - Jede: Fix bug when a char is not normalized for FAT32 operation (open, create, delete file/dir)
  10.03.2023 - Assinie: Fix bug : . and .. was reading as right entry. Now, it's skipped
  02.04.2022 - Assinie: Added support for CMD_REAF_VAR32 (GET_FILE_SIZE and CURRENT_OFFSET only)
@@ -26,7 +27,45 @@
  */
 /* /// "Portable includes" */
 
-//#define DEBUG_CH376 1
+#define DEBUG_CH376 1
+
+#define CONFIG_FILE "plugins/ch376.cfg"
+
+
+#define USB_MOUSE_CLASS         0x03
+#define USB_MASS_STORAGE_CLASS  0x08
+#define USB_HUB_CLASS           0x09
+#define USB_NO_CONNECTED_DEVICE 0xff
+
+#define CH376_USB_SPEED_FULL_12MBPS  0x00
+#define CH376_USB_SPEED_FULL_1_5MBPS 0x01
+#define CH376_USB_SPEED_LOW_1_5MBPS  0x02
+
+#define CH376_MAX_USB_DEVICES 127 // usb can handle 127 for each controler
+
+#define USBDEVICE_IS_CONNECTED     1
+#define USBDEVICE_IS_NOT_CONNECTED 0
+
+#define ISSUE_TKN_IS_SET     1
+#define ISSUE_TKN_IS_NOT_SET 0
+
+// Pour les fonction de lecture du fichier de configuration
+
+#if SDL_MAJOR_VERSION == 1
+# ifdef __SPECIFY_SDL_DIR__
+# include <SDL/SDL.h>
+# else
+# include <SDL.h>
+# endif
+#else /* SDL_MAJOR_VERSION == 1 */
+# ifdef __SPECIFY_SDL_DIR__
+# include <SDL2/SDL.h>
+# else
+# include <SDL.h>
+# endif
+#endif
+
+SDL_bool read_config_string( char *buf, char *token, char *dest, Sint32 maxlen );
 
 #if defined(__MORPHOS__) || defined (__AMIGA__) || defined (__AROS__)
 
@@ -80,17 +119,6 @@ extern struct Library *SysBase;
 
 #include "plugin.h"
 #include "ch376.h"
-
-#define USB_MOUSE_CLASS        0x03
-#define USB_MASS_STORAGE_CLASS 0x08
-#define USB_HUB_CLASS          0x03
-
-
-#define CH376_USB_SPEED_FULL_12MBPS 0x00
-#define CH376_USB_SPEED_FULL_1_5MBPS 0x01
-#define CH376_USB_SPEED_LOW_1_5MBPS 0x02
-
-#define CH376_MAX_USB_DEVICES 127 // usb can handle 127 for each controler
 
 /* /// */
 
@@ -238,24 +266,24 @@ extern struct Library *SysBase;
 /* Bit 7: Bulk endpoint synchronization indicator */
 /* Bit 6: Bulk endpoint synchronization indicator */
 /* Bit 5 ~ Bit 0: Must be 0 */
-#define VAR_UDISK_TOGGLE 0x31
+#define VAR_UDISK_TOGGLE   0x31
 
 /* The logical unit number of the USB storage device */
 /* Bit 7 ~ Bit 4: The current logical unit number of the USB storage device; after CH376 initializes the USB storage device, the default value is to access logical unit #0 */
 /* Bit 3 ~ Bit 0: The maximum logical unit number of the USB storage device; plus 1 equals the number of logical units */
-#define VAR_UDISK_LUN 0x34
+#define VAR_UDISK_LUN      0x34
 
 /* The number of sectors per cluster of the logical disk */
-#define VAR_SEC_PER_CLUS 0x38
+#define VAR_SEC_PER_CLUS   0x38
 /* The index number of the current file directory information in the sector */
 #define VAR_FILE_DIR_INDEX 0x3B
 
 /* The sector offset of the current file pointer in the cluster; 0xFF points to the end of the file, the end of the cluster */
-#define VAR_CLUS_SEC_OFS 0x3C
+#define VAR_CLUS_SEC_OFS   0x3C
 
 /* 32-bit variable / 4 bytes */
 /* For FAT16 disks, this is the number of sectors occupied by the root directory; for FAT32 disks, this is the starting cluster number of the root directory (total length 32 bits, least significant byte first) */
-#define VAR_DISK_ROOT 0x44
+#define VAR_DISK_ROOT      0x44
 
 /* The total number of clusters of the logical disk (total length is 32 bits, least significant byte first) */
 #define VAR_DSK_TOTAL_CLUS 0x48
@@ -340,11 +368,6 @@ struct MountInfo
     char     MOUNT_ProductRevStr[4];
 };
 
-#define USBDEVICE_IS_CONNECTED     1
-#define USBDEVICE_IS_NOT_CONNECTED 0
-
-#define ISSUE_TKN_IS_SET     1
-#define ISSUE_TKN_IS_NOT_SET 0
 
 struct UsbDevice
 {
@@ -431,8 +454,6 @@ struct ch376
     CH376_U8 hid_mouse_deltax;
     CH376_U8 hid_mouse_deltay;
 
-    CH376_U32 hid_mouse_posx;
-    CH376_U32 hid_mouse_posy;
 
 };
 
@@ -450,6 +471,9 @@ static void file_read_chunk(struct ch376 *ch376);
 static void file_write_chunk(struct ch376 *ch376);
 static CH376_BOOL pattern_match(const char *pattern, const char *str);
 static const char * normalize_pattern(const char *pattern, char *normalized_pattern);
+
+SDL_bool config_load_ch376(struct ch376 *ch376);
+
 
 /* /// */
 
@@ -1769,6 +1793,61 @@ static CH376_S32 system_get_file_offset(CH376_CONTEXT *context, CH376_FILE file)
 #error "FixMe!"
 #endif
 
+
+SDL_bool config_load_ch376(struct ch376 *ch376)
+{
+    FILE* f;
+
+    char* result;
+    char line[1024];
+    char main_usb_connected_device[100];
+
+    f = fopen(CONFIG_FILE, "r");
+    if (!f)
+    {
+        // cfg file is not mandatory
+        return SDL_TRUE;
+    }
+
+    //        ch376->device_connected_to_usb_port = USB_MASS_STORAGE_CLASS;
+    while (!feof(f))
+    {
+        result = fgets(line, 1024, f);
+        if( result )
+        {
+          // FIXME: do something to silence the compiler warning ...
+        }
+
+        if (read_config_string(line, "device_connected_to_usb_port", main_usb_connected_device, 100))
+        {
+            if (strcmp(main_usb_connected_device, "USB_MASS_STORAGE_CLASS") == 0)
+            {
+                ch376->device_connected_to_usb_port = USB_MASS_STORAGE_CLASS;
+                ch376->usbdevices[0].USBDEVICE_Is_Connected = USBDEVICE_IS_CONNECTED;
+                dbg_printf("CH376 usb connected device : USB_MASS_STORAGE_CLASS\n");
+            }
+            else if (strcmp(main_usb_connected_device, "USB_MOUSE_CLASS") == 0)
+            {
+                dbg_printf("CH376 usb connected device : USB_MOUSE_CLASS\n");
+                ch376->device_connected_to_usb_port = USB_MOUSE_CLASS;
+                ch376->usbdevices[0].USBDEVICE_Is_Connected = USBDEVICE_IS_CONNECTED;
+                ch376->hid_mouse_deltax = 0;
+                ch376->hid_mouse_deltay = 0;
+            }
+            // Default is mass storage
+            else
+            {
+                dbg_printf("CH376 usb connected device : USB_MASS_STORAGE_CLASS\n");
+                ch376->device_connected_to_usb_port = USB_NO_CONNECTED_DEVICE;
+                ch376->usbdevices[0].USBDEVICE_Is_Connected = USBDEVICE_IS_NOT_CONNECTED;
+            }
+        }
+    }
+    fclose(f);
+
+    return SDL_TRUE;
+}
+
 /* /// "CH376 private subroutines" */
 
 static int check_fat32_char(char c)
@@ -2228,18 +2307,24 @@ CH376_U8 ch376_read_data_port(struct ch376 *ch376)
 
     case CH376_CMD_RD_USB_DATA0:
         if (ch376->usb_mode == CH376_ARG_SET_USB_MODE_USB_HOST)
+        {
             dbg_printf("[READ][DATA][CH376_CMD_RD_USB_DATA0] Entering into usb host mode : ");
+        }
 
         if (ch376->usb_mode == CH376_ARG_SET_USB_MODE_SD_HOST)
+        {
             dbg_printf("[READ][DATA][CH376_CMD_RD_USB_DATA0] Entering into sdcard mode : ");
+        }
 
         if (ch376->device_connected_to_usb_port == USB_MOUSE_CLASS)
+        {
             dbg_printf("Mouse connected in usb port\n");
+        }
 
         if (ch376->device_connected_to_usb_port == USB_MASS_STORAGE_CLASS)
+        {
             dbg_printf("Mass storage in usb port\n");
-
-
+        }
 
         if (ch376->device_connected_to_usb_port != USB_MASS_STORAGE_CLASS && ch376->usb_mode == CH376_ARG_SET_USB_MODE_USB_HOST)
         {
@@ -2263,8 +2348,6 @@ CH376_U8 ch376_read_data_port(struct ch376 *ch376)
                 ch376->usb_data[4] = 0; // wheel
                 data_out = ch376->usb_data[0];
                 ch376->pos_in_usb_data ++;
-                ch376->hid_mouse_posx = x;
-                ch376->hid_mouse_posy = y;
 
             }
             else
@@ -3251,7 +3334,9 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_
         else if (ch376->usb_speed == CH376_USB_SPEED_LOW_1_5MBPS)
             dbg_printf("CH376_USB_SPEED_LOW_1_5MBPS\n");
         else
+        {
             dbg_printf("Panic !!! Unknown speed mode : %d\n", data);
+        }
         break;
 
     case CH376_CMD_SET_REGISTER:
@@ -3297,9 +3382,12 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_
         for (i = 0; i < CH376_MAX_USB_DEVICES; i++) // We are looking device from 0 to max usb devices
         {
             if (ch376->usbdevices[i].USBDEVICE_Address == ch376->current_device_address && ch376->usbdevices[i].USBDEVICE_Is_Connected == USBDEVICE_IS_CONNECTED)
+                // Device found
                 break;
             else
+            {
                  dbg_printf("Error %d for current device %d address : %d because device is %d connected\n", i, ch376->current_device_address, ch376->usbdevices[i].USBDEVICE_Address, USBDEVICE_IS_CONNECTED);
+            }
         }
         // We found device, setting to device
         if (i < CH376_MAX_USB_DEVICES)
@@ -3308,7 +3396,9 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_
             ch376->usbdevices[i].USBDEVICE_Config = data;
         }
         else
+        {
             dbg_printf("[WRITE][DATA][CH376_CMD_SET_CONFIG] Panic we did not found device with usb address \n", ch376->current_device_address);
+        }
         break;
 
 
@@ -3327,7 +3417,6 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_
             ch376->current_usb_device_to_set_adress ++;
             ch376->interface_status = 127;
             ch376->command_status = CH376_INT_SUCCESS;
-
         }
 
         break;
@@ -3363,18 +3452,7 @@ struct ch376 * ch376_create(void *user_data)
             }
             ch376->current_usb_device_to_set_adress = 0;
             ch376->issue_tkn_is_set = ISSUE_TKN_IS_NOT_SET;
-            //Connect an usb mass storage
-            ch376->device_connected_to_usb_port = USB_MASS_STORAGE_CLASS;
-            // Connect a mouse on usb port
-            //ch376->device_connected_to_usb_port = USB_MOUSE_CLASS;
-            ch376->usbdevices[0].USBDEVICE_Is_Connected = USBDEVICE_IS_CONNECTED;
-
-            ch376->hid_mouse_deltax = 0;
-            ch376->hid_mouse_deltay = 0;
-            int state;
-            state = SDL_GetMouseState(&ch376->hid_mouse_posx, &ch376->hid_mouse_posy);
-
-
+            config_load_ch376(ch376);
             ch376->current_device_address = 0;
             clear_structure(ch376);
         }
@@ -3432,3 +3510,6 @@ const char * ch376_get_usb_drive_path(struct ch376 *ch376)
     return ch376->usb_drive_path;
 }
 /* /// */
+
+
+// Config
