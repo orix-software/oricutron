@@ -4,6 +4,9 @@
 
 Ce plugin simule une interface à base de ch376 qui permet d'accèder à une carte mémoire SD ou USB.
 
+Il permet de manière partielle de gérer les autres devices usb (autres que mass storage). Voir section "Devices usb"
+
+
 Son adresse de base est $341 à $342.
 
 >[!NOTE]
@@ -84,3 +87,69 @@ Se reporter à la documentation du ch376 pour plus de détails.
 >[!NOTE]
 >Il faut également activer le plugin Twilighte si on veut utiliser Orix.
 
+## Devices usb
+
+Il est actuellement possible d'interroger le descriptor usb d'un device à partir du moment où on spécifie un fichier de conf qui définit son descriptor ou d'accéder au descriptor d'un device usb du hôte qui fait tourner l'émulation.
+
+### Fichier de conf pour un device usb "virtuel"
+
+Exemple de contenu du fichier ch376.
+
+Ainsi l'appel sur le descriptor de l'usb branché sur le port principal (et unique du ch376) prendra les valeurs définies dans plugins/usb_device_mass_storage.cfg
+
+```
+device_connected_to_usb_port=usb_device_mass_storage.cfg
+```
+
+Exemple de fichier .cfg pour une souris usb :
+
+```
+[USB_DEVICE_DESCRIPTOR]
+bLength=0x12
+bDescriptorType=0x01
+bcdUSB=0x0200
+bDeviceClass=0x03
+bDeviceSubClass=0x00
+bDeviceProtocol=0x00
+bMaxPacketSize0=0x40
+idVendor=0x1e7d
+idProduct=0x2c8b
+bcdDevice=0x0100
+iManufacturer=0x00
+iProduct=0x00
+iSerialNumber=0x00
+bNumConfigurations=0x01
+```
+
+### Accéder à un device usb host
+
+Pour accéder à un device usb physique local, il faut qu'il soit visible de lsusb et surtout il ne doit pas être occupé par le kernel (c'est le cas pour le clavier, souris, dongle wifi, et ethernet puisqu'ils sont nécessaire pour un fonctionnement normal).
+
+Par exemple, le device bluetooth marchera s'il n'est pas utilisé, ou si un dongle wifi n'est pas configuré, ou un device ethernet.
+
+Pour que la récupération de l'émulation fonctionne, il faut donc spécifier l'idvendor et l'idproduct du device dans la conf du ch376.cfg :
+
+```
+device_connected_to_usb_port=8087:0026
+```
+
+### Accéder à un device usb host sur wsl
+
+Sur powershell
+
+```
+usbipd list
+
+1-2    0bda:8156  Realtek Gaming USB 2.5GbE Family Controller                   Not shared
+2-5    27c6:538d  Goodix fingerprint                                            Not shared
+2-6    0c45:671b  Integrated Webcam                                             Not shared
+2-10   8087:0026  Intel(R) Wireless Bluetooth(R)                                Shared
+3-1    1e7d:2c8b  Périphérique d’entrée USB                                     Shared
+3-2    1e7d:314c  Périphérique d’entrée USB                                     Not shared
+```
+
+Puis attacher le device à wsl :
+
+```
+ usbipd attach --wsl --busid 2-10
+```

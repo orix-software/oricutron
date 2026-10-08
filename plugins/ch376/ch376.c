@@ -10,6 +10,7 @@
  ** ch376.c *********************************************************/
 /*
  Changes:
+ 22.12.2025 - Now we can access to usb host descriptors
  21.12.2025 - Add .cfg usb management
  20.12.2025 - Add descr usb management
  02.12.2025 - Jede: Add config ch376 file to specify connected device
@@ -30,9 +31,11 @@
 
 
 
-//#define DEBUG_CH376 1
+#define DEBUG_CH376 1
 
 #define CONFIG_FILE "plugins/ch376.cfg"
+
+#include <libusb-1.0/libusb.h>
 
 #define USB_MOUSE_CLASS         0x03
 #define USB_MASS_STORAGE_CLASS  0x08
@@ -266,7 +269,7 @@ extern int parse_usb_cfg(const char *filename, struct usb_device_descriptor_t *d
 /* Bit 5: Timeout for CMD1 command */
 /* Bit 6: Timeout for CMD58 command */
 /* Other bits are reserved; please do not modify */
-#define VAR_DISK_STATUS             0x2B
+#define VAR_DISK_STATUS             0x2b
 
 /* The synchronization indicator of the BULK-IN / BULK-OUT endpoint of the USB storage device */
 /* Bit 7: Bulk endpoint synchronization indicator */
@@ -463,6 +466,9 @@ struct ch376
     struct usb_device_descriptor_t usb_main_device;
     CH376_U8 pos_in_usb_descriptor;
     CH376_U8 command_performed;
+    CH376_U8 usb_main_device_idVendor;
+    CH376_U8 usb_main_device_idProduct;
+    CH376_U8 usb_main_device_is_usb_from_host;
 
 
 };
@@ -1811,6 +1817,7 @@ SDL_bool config_load_ch376(struct ch376 *ch376, int usb_addr)
     char* result;
     char line[1024];
     char *main_usb_connected_device;
+    char *stridProduct;
 
     main_usb_connected_device = malloc(200);
     f = fopen(CONFIG_FILE, "r");
@@ -1857,6 +1864,91 @@ SDL_bool config_load_ch376(struct ch376 *ch376, int usb_addr)
                 dbg_printf("[CH376 plugin] found device class for main usb port : %d\n", device_class);
                 ch376->device_connected_to_usb_port = device_class;
                 ch376->usbdevices[0].USBDEVICE_Is_Connected = USBDEVICE_IS_CONNECTED;
+            }
+            else if (strchr(line, ':') != NULL)
+            {
+
+                char stridvendor[5] = {0};
+                long int idvendor = 0;
+                long int idProduct = 0;
+                char *endptr;
+                char *separator = strchr(line, ':');
+                char *egal = strchr(line, '=');
+                if (separator != NULL)
+                {
+                    stridProduct = separator + 1;
+                }
+                strncpy(stridvendor, egal + 1, 4);
+                dbg_printf("[CH376 plugin] ICI found device class for main usb port : %s %s\n", stridvendor, stridProduct);
+                idProduct = strtol(stridProduct, &endptr, 16);
+                idvendor = strtol(stridvendor, &endptr, 16);
+
+                // cfg asks to access to a device
+                libusb_device **devs;
+                libusb_context *ctx = NULL;
+                int r;
+                int found = 0;
+                r = libusb_init(&ctx);
+                if (r < 0)
+                {
+                    // , libusb_error_name(r)
+                    dbg_printf(stderr, "Erreur d'initialisation de libusb : %d\n", r);
+                    return SDL_TRUE;
+                }
+
+                // Lister tous les périphériques USB
+                ssize_t cnt = libusb_get_device_list(ctx, &devs);
+                if (cnt < 0) {
+                    dbg_printf(stderr, "Erreur lors de la récupération de la liste des périphériques\n");
+                    libusb_exit(ctx);
+                    return 1;
+                }
+
+                // Parcourir la liste
+                for (ssize_t i = 0; i < cnt; i++) {
+                    libusb_device *dev = devs[i];
+                    struct libusb_device_descriptor desc;
+
+                    r = libusb_get_device_descriptor(dev, &desc);
+                    if (r < 0) {
+                        dbg_printf(stderr, "Erreur lors de la récupération du descripteur pour le périphérique %zd\n", i);
+                        continue;
+                    }
+
+                    // Vérifier si le VID et PID correspondent
+                    if (desc.idVendor == idvendor && desc.idProduct == idProduct) {
+                        dbg_printf("Périphérique trouvé : VID=0x%04X, PID=0x%04X\n", desc.idVendor, desc.idProduct);
+                        ch376->usb_main_device_idVendor = desc.idVendor;
+                        ch376->usb_main_device_idProduct = desc.idProduct;
+                        ch376->usb_main_device_is_usb_from_host = CH376_TRUE;
+                        ch376->usb_main_device.bLength = desc.bLength;
+                        ch376->usb_main_device.bDescriptorType = desc.bDescriptorType;
+                        ch376->usb_main_device.bcdUSB = desc.bcdUSB;
+                        ch376->usb_main_device.bDeviceClass = desc.bDeviceClass;
+                        ch376->usb_main_device.bDeviceSubClass = desc.bDeviceSubClass;
+                        ch376->usb_main_device.bDeviceProtocol = desc.bDeviceProtocol;
+                        ch376->usb_main_device.bMaxPacketSize0 = desc.bMaxPacketSize0;
+                        ch376->usb_main_device.idVendor = desc.idVendor;
+                        ch376->usb_main_device.idProduct = desc.idProduct;
+                        ch376->usb_main_device.bcdDevice = desc.bcdDevice;
+                        ch376->usb_main_device.iManufacturer = desc.iManufacturer;
+                        ch376->usb_main_device.iProduct = desc.iProduct;
+                        ch376->usb_main_device.iSerialNumber = desc.iSerialNumber;
+                        ch376->usb_main_device.bNumConfigurations = desc.bNumConfigurations;
+
+                        found = 1;
+                    }
+                }
+
+                // Libérer la liste des périphériques
+                libusb_free_device_list(devs, 1);
+                libusb_exit(ctx);
+
+                if (!found)
+                {
+                    dbg_printf("Aucun périphérique avec VID=%04X et PID=%04X trouvé.\n", idvendor, idProduct );
+                }
+                return SDL_TRUE;
             }
             else
             {
@@ -2145,66 +2237,69 @@ dbg_printf("\n*** read count/ %d\n", ch376->buffer_read_count);
 unsigned char read_usb_descriptor(struct ch376 *ch376)
 {
     unsigned char data_out;
+
+
     switch (ch376->pos_in_usb_descriptor)
     {
-        case 0:
-            data_out = ch376->usb_main_device.bLength;
-            break;
-        case 1:
-            data_out = ch376->usb_main_device.bDescriptorType;
-            break;
-        case 2:
-            data_out = ch376->usb_main_device.bcdUSB & 0x00FF;
-            break;
-        case 3:
-            data_out = (ch376->usb_main_device.bcdUSB >> 8) & 0xFF;
-            break;
-        case 4:
-            data_out = ch376->usb_main_device.bDeviceClass;
-            break;
-        case 5:
-            data_out = ch376->usb_main_device.bDeviceSubClass;
-            break;
-        case 6:
-            data_out = ch376->usb_main_device.bDeviceProtocol;
-            break;
-        case 7:
-            data_out = ch376->usb_main_device.bMaxPacketSize0;
-            break;
-        case 8:
-            data_out = ch376->usb_main_device.idVendor & 0x00FF;
-            break;
-        case 9:
-            data_out = (ch376->usb_main_device.idVendor >> 8) & 0xFF;
-            break;
-        case 10:
-            data_out = ch376->usb_main_device.idProduct & 0x00FF;
-            break;
-        case 11:
-            data_out = (ch376->usb_main_device.idProduct >> 8) & 0xFF;
-            break;
-        case 12:
-            data_out = ch376->usb_main_device.bcdDevice & 0x00FF;
-            break;
-        case 13:
-            data_out = (ch376->usb_main_device.bcdDevice >> 8) & 0xFF;
-            break;
-        case 14:
-            data_out = ch376->usb_main_device.iManufacturer;
-            break;
-        case 15:
-            data_out = ch376->usb_main_device.iProduct;
-            break;
-        case 16:
-            data_out = ch376->usb_main_device.iSerialNumber;
-            break;
-        case 17:
-            data_out = ch376->usb_main_device.bNumConfigurations;
-            ch376->command_performed = CH376_CMD_NONE;
-            break;
-        default:
-            data_out = 0;
+    case 0:
+        data_out = ch376->usb_main_device.bLength;
+        break;
+    case 1:
+        data_out = ch376->usb_main_device.bDescriptorType;
+        break;
+    case 2:
+        data_out = ch376->usb_main_device.bcdUSB & 0x00FF;
+        break;
+    case 3:
+        data_out = (ch376->usb_main_device.bcdUSB >> 8) & 0xFF;
+        break;
+    case 4:
+        data_out = ch376->usb_main_device.bDeviceClass;
+        break;
+    case 5:
+        data_out = ch376->usb_main_device.bDeviceSubClass;
+        break;
+    case 6:
+        data_out = ch376->usb_main_device.bDeviceProtocol;
+        break;
+    case 7:
+        data_out = ch376->usb_main_device.bMaxPacketSize0;
+        break;
+    case 8:
+        data_out = ch376->usb_main_device.idVendor & 0x00FF;
+        break;
+    case 9:
+        data_out = (ch376->usb_main_device.idVendor >> 8) & 0xFF;
+        break;
+    case 10:
+        data_out = ch376->usb_main_device.idProduct & 0x00FF;
+        break;
+    case 11:
+        data_out = (ch376->usb_main_device.idProduct >> 8) & 0xFF;
+        break;
+    case 12:
+        data_out = ch376->usb_main_device.bcdDevice & 0x00FF;
+        break;
+    case 13:
+        data_out = (ch376->usb_main_device.bcdDevice >> 8) & 0xFF;
+        break;
+    case 14:
+        data_out = ch376->usb_main_device.iManufacturer;
+        break;
+    case 15:
+        data_out = ch376->usb_main_device.iProduct;
+        break;
+    case 16:
+        data_out = ch376->usb_main_device.iSerialNumber;
+        break;
+    case 17:
+        data_out = ch376->usb_main_device.bNumConfigurations;
+        ch376->command_performed = CH376_CMD_NONE;
+        break;
+    default:
+        data_out = 0;
     }
+
     dbg_printf("[READ][DATA][CH376_CMD_RD_USB_DATA0][Descr] offset : %d value : %d\n", ch376->pos_in_usb_descriptor, data_out);
     ch376->pos_in_usb_descriptor ++;
     return data_out;
@@ -3510,7 +3605,6 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_
         ch376->current_device_address = data;
         break;
 
-
     case CH376_CMD_ISSUE_TKN_X:
         if (ch376->issue_tkn_is_set == ISSUE_TKN_IS_NOT_SET)
         {
@@ -3527,7 +3621,6 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_
         break;
 
     case CH376_CMD_SET_CONFIG:
-        //USBDEVICE_Config;
         // Looking for device with current usb address
         int i;
         for (i = 0; i < CH376_MAX_USB_DEVICES; i++) // We are looking device from 0 to max usb devices
@@ -3548,7 +3641,7 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_
         }
         else
         {
-            dbg_printf("[WRITE][DATA][CH376_CMD_SET_CONFIG] Panic we did not found device with usb address \n", ch376->current_device_address);
+            dbg_printf("[WRITE][DATA][CH376_CMD_SET_CONFIG] Panic we did not found device with usb address %d\n", ch376->current_device_address);
         }
         break;
 
@@ -3610,6 +3703,9 @@ struct ch376 * ch376_create(void *user_data)
             ch376->current_usb_device_to_set_adress = 0;
             ch376->issue_tkn_is_set = ISSUE_TKN_IS_NOT_SET;
             // Load usb config with usb addr equal to 0, 0 is not the usb_addr but the index of the usbdevice
+            ch376->usb_main_device_idVendor = 0;
+            ch376->usb_main_device_idProduct = 0;
+            ch376->usb_main_device_is_usb_from_host = CH376_FALSE;
             config_load_ch376(ch376, 0);
             ch376->command_performed = CH376_CMD_NONE;
 
