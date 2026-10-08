@@ -108,6 +108,7 @@ struct BOARD {
     // 0x0342 - 0x0343
     unsigned char t_register;                   // ?xRx xVVV
     unsigned char t_banking_register;
+
 };
 
 // Tableau: instances

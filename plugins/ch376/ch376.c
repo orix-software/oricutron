@@ -11,6 +11,7 @@
 /*
  Changes:
 
+ 23.11.2025 - Jede: add usb devices management
  10.06.2025 - Jede: Fix bug when a char is not normalized for FAT32 operation (open, create, delete file/dir)
  10.03.2023 - Assinie: Fix bug : . and .. was reading as right entry. Now, it's skipped
  02.04.2022 - Assinie: Added support for CMD_REAF_VAR32 (GET_FILE_SIZE and CURRENT_OFFSET only)
@@ -25,7 +26,7 @@
  */
 /* /// "Portable includes" */
 
-
+//#define DEBUG_CH376 1
 
 #if defined(__MORPHOS__) || defined (__AMIGA__) || defined (__AROS__)
 
@@ -80,6 +81,17 @@ extern struct Library *SysBase;
 #include "plugin.h"
 #include "ch376.h"
 
+#define USB_MOUSE_CLASS        0x03
+#define USB_MASS_STORAGE_CLASS 0x08
+#define USB_HUB_CLASS          0x03
+
+
+#define CH376_USB_SPEED_FULL_12MBPS 0x00
+#define CH376_USB_SPEED_FULL_1_5MBPS 0x01
+#define CH376_USB_SPEED_LOW_1_5MBPS 0x02
+
+#define CH376_MAX_USB_DEVICES 127 // usb can handle 127 for each controler
+
 /* /// */
 
 /* /// "CH376 interface commands and constants" */
@@ -91,11 +103,11 @@ extern struct Library *SysBase;
 #define CH376_CMD_NONE          0x00
 #define CH376_CMD_GET_IC_VER    0x01
 #define CH376_CMD_ENTER_SLEEP   0x03 // Not emulated
-#define CH376_CMD_SET_USB_SPEED 0x04 // Not emulated
+#define CH376_CMD_SET_USB_SPEED 0x04
 #define CH376_CMD_RESET_ALL     0x05 // Not emulated
 #define CH376_CMD_CHECK_EXIST   0x06
 #define CH376_CMD_GET_REGISTER  0x0a // Not emulated
-#define CH376_CMD_SET_REGISTER  0x0b // Not emulated
+#define CH376_CMD_SET_REGISTER  0x0b // or WRITE_VAR8
 #define CH376_CMD_READ_VAR32    0x0c
 #define CH376_CMD_WRITE_VAR32   0x0d // Not emulated
 #define CH376_CMD_DELAY_100US   0x0f // Not emulated
@@ -328,6 +340,19 @@ struct MountInfo
     char     MOUNT_ProductRevStr[4];
 };
 
+#define USBDEVICE_IS_CONNECTED     1
+#define USBDEVICE_IS_NOT_CONNECTED 0
+
+#define ISSUE_TKN_IS_SET     1
+#define ISSUE_TKN_IS_NOT_SET 0
+
+struct UsbDevice
+{
+    CH376_U8 USBDEVICE_Address;
+    CH376_U8 USBDEVICE_Config;
+    CH376_U8 USBDEVICE_Is_Connected;
+};
+
 struct DiskQuery
 {
     CH376_U8 DISK_TotalSector[4];
@@ -383,6 +408,31 @@ struct ch376
     char *usb_drive_path;
 
     CH376_S32 current_pos;
+
+    // USB management
+    CH376_U8 usb_speed; // Usb speed
+    CH376_U8 chip_registers[0x6c]; //Registers
+
+    CH376_U8 current_register_write;
+    struct UsbDevice usbdevices[CH376_MAX_USB_DEVICES];
+    // Each devices connected has 0 address, when we set usb address, we don't know which one is available when we asked to controler
+    // That is why, we need to set the first devices
+    // The device is enumerated on the CH376 bus with adress 0
+    // current_usb_device_to_set_adress is used to enumerate the next device which has usb_adress_0
+    CH376_U8 current_usb_device_to_set_adress;
+    CH376_U8 issue_tkn;
+    CH376_U8 issue_tkn_is_set;
+    CH376_U8 operation_descriptor;
+    CH376_U8 device_connected_to_usb_port;
+    CH376_U8 usb_data[100];
+    CH376_U8 pos_in_usb_data;
+    CH376_U8 current_device_address;
+
+    CH376_U8 hid_mouse_deltax;
+    CH376_U8 hid_mouse_deltay;
+
+    CH376_U32 hid_mouse_posx;
+    CH376_U32 hid_mouse_posy;
 
 };
 
@@ -2177,31 +2227,90 @@ CH376_U8 ch376_read_data_port(struct ch376 *ch376)
         break;
 
     case CH376_CMD_RD_USB_DATA0:
-        if(ch376->nb_bytes_in_cmd_data)
+        if (ch376->usb_mode == CH376_ARG_SET_USB_MODE_USB_HOST)
+            dbg_printf("[READ][DATA][CH376_CMD_RD_USB_DATA0] Entering into usb host mode : ");
+
+        if (ch376->usb_mode == CH376_ARG_SET_USB_MODE_SD_HOST)
+            dbg_printf("[READ][DATA][CH376_CMD_RD_USB_DATA0] Entering into sdcard mode : ");
+
+        if (ch376->device_connected_to_usb_port == USB_MOUSE_CLASS)
+            dbg_printf("Mouse connected in usb port\n");
+
+        if (ch376->device_connected_to_usb_port == USB_MASS_STORAGE_CLASS)
+            dbg_printf("Mass storage in usb port\n");
+
+
+
+        if (ch376->device_connected_to_usb_port != USB_MASS_STORAGE_CLASS && ch376->usb_mode == CH376_ARG_SET_USB_MODE_USB_HOST)
         {
-            if(ch376->pos_rw_in_cmd_data == CMD_DATA_REQ_SIZE)
+            if (ch376->pos_in_usb_data == 0)
             {
-                data_out = ch376->nb_bytes_in_cmd_data;
-                ch376->pos_rw_in_cmd_data = 0;
-                dbg_printf("[READ][DATA][CH376_CMD_RD_USB_DATA0] read i/o buffer size: &%02x\n", data_out);
+                // Get mouse informations
+                int x, y;
+                // Bug it does not manage blank part. To manage it, it requires to have x and y of oric display
+                SDL_GetRelativeMouseState(&x, &y);
+
+                ch376->hid_mouse_deltax = (signed char)x;
+                ch376->hid_mouse_deltay = (signed char)y;
+
+                if (ch376->hid_mouse_deltax == 0 && ch376->hid_mouse_deltay == 0)
+                    ch376->usb_data[0] = 0; // No movement
+                else
+                    ch376->usb_data[0] = 1; // Must be checked under real ch376, which value it will return
+                ch376->usb_data[1] = 0; // button
+                ch376->usb_data[2] = ch376->hid_mouse_deltax; // X
+                ch376->usb_data[3] = ch376->hid_mouse_deltay; // Y
+                ch376->usb_data[4] = 0; // wheel
+                data_out = ch376->usb_data[0];
+                ch376->pos_in_usb_data ++;
+                ch376->hid_mouse_posx = x;
+                ch376->hid_mouse_posy = y;
+
             }
-            else if(ch376->nb_bytes_in_cmd_data != ch376->pos_rw_in_cmd_data)
+            else
             {
-                data_out = ch376->cmd_data.CMD_IOBuffer[ch376->pos_rw_in_cmd_data];
-
-                if (!ch376->current_file_is_directory)
-                    ++ch376->current_pos;
-
-                dbg_printf("[READ][DATA][CH376_CMD_RD_USB_DATA0] read \"%c\" (&%02x) from i/o buffer at position &%02x\n", data_out, data_out, ch376->pos_rw_in_cmd_data);
-
-                if(++ch376->pos_rw_in_cmd_data == ch376->nb_bytes_in_cmd_data)
-                    ch376->nb_bytes_in_cmd_data = 0;
+                data_out = ch376->usb_data[ch376->pos_in_usb_data];
+                dbg_printf("Sending byte %d value : 0x%x\n", ch376->pos_in_usb_data, data_out);
+                // When we read registers, we init to 0 x ()
+                if (ch376->pos_in_usb_data == 2) ch376->hid_mouse_deltax = 0;
+                if (ch376->pos_in_usb_data == 3) ch376->hid_mouse_deltay = 0;
+                // When we read registers, we init to 0 x ()
+                ch376->usb_data[ch376->pos_in_usb_data] = 0;
+                ch376->pos_in_usb_data ++;
             }
+
+
         }
-        else
+        // Mass storage
+        else if (ch376->device_connected_to_usb_port == USB_MASS_STORAGE_CLASS || ch376->usb_mode == CH376_ARG_SET_USB_MODE_SD_HOST)
         {
-            data_out = 0;
-            dbg_printf("[READ][DATA][CH376_CMD_RD_USB_DATA0] nothing to read from i/o buffer\n");
+
+            if(ch376->nb_bytes_in_cmd_data)
+            {
+                if(ch376->pos_rw_in_cmd_data == CMD_DATA_REQ_SIZE)
+                {
+                    data_out = ch376->nb_bytes_in_cmd_data;
+                    ch376->pos_rw_in_cmd_data = 0;
+                    dbg_printf("[READ][DATA][CH376_CMD_RD_USB_DATA0] read i/o buffer size: &%02x\n", data_out);
+                }
+                else if(ch376->nb_bytes_in_cmd_data != ch376->pos_rw_in_cmd_data)
+                {
+                    data_out = ch376->cmd_data.CMD_IOBuffer[ch376->pos_rw_in_cmd_data];
+
+                    if (!ch376->current_file_is_directory)
+                        ++ch376->current_pos;
+
+                    dbg_printf("[READ][DATA][CH376_CMD_RD_USB_DATA0] read \"%c\" (&%02x) from i/o buffer at position &%02x\n", data_out, data_out, ch376->pos_rw_in_cmd_data);
+
+                    if(++ch376->pos_rw_in_cmd_data == ch376->nb_bytes_in_cmd_data)
+                        ch376->nb_bytes_in_cmd_data = 0;
+                }
+            }
+            else
+            {
+                data_out = 0;
+                dbg_printf("[READ][DATA][CH376_CMD_RD_USB_DATA0] nothing to read from i/o buffer\n");
+            }
         }
         break;
 
@@ -2744,6 +2853,7 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command, struct expa
     case CH376_CMD_RD_USB_DATA0:
         ch376->command = CH376_CMD_RD_USB_DATA0;
         ch376->pos_rw_in_cmd_data = CMD_DATA_REQ_SIZE; // Will be reset when size is sent
+        ch376->pos_in_usb_data = 0;
         dbg_printf("[WRITE][COMMAND][CH376_CMD_RD_USB_DATA0] waiting for i/o buffer read\n");
         break;
 
@@ -2847,6 +2957,37 @@ file_enum_go:
         dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_CLOSE] waiting for close mode\n");
         break;
 
+    // USB management
+    case CH376_CMD_SET_USB_SPEED:
+        ch376->command = CH376_CMD_SET_USB_SPEED;
+        dbg_printf("[WRITE][COMMAND][CH376_CMD_SET_USB_SPEED] Waiting for one data\n");
+        break;
+
+    case CH376_CMD_SET_REGISTER:
+        ch376->command = CH376_CMD_SET_REGISTER;
+        dbg_printf("[WRITE][COMMAND][CH376_CMD_SET_REGISTER] Waiting for two data (register and value)\n");
+        break;
+
+    case CH376_SET_USB_ADDR:
+        ch376->command = CH376_SET_USB_ADDR;
+        dbg_printf("[WRITE][COMMAND][CH376_SET_USB_ADDR] Waiting for data from data port\n");
+        break;
+
+    case CH376_CMD_SET_CONFIG:
+        ch376->command = CH376_CMD_SET_CONFIG;
+        dbg_printf("[WRITE][COMMAND][CH376_CMD_SET_CONFIG] Waiting for data from data port\n");
+        break;
+
+    case CH376_CMD_ISSUE_TKN_X:
+        ch376->command = CH376_CMD_ISSUE_TKN_X;
+        dbg_printf("[WRITE][COMMAND][CH376_CMD_ISSUE_TKN_X] Waiting for data from data port\n");
+        break;
+
+    case CH376_CMD_SET_ADDR:
+        ch376->command = CH376_CMD_SET_ADDR;
+        dbg_printf("[WRITE][COMMAND][CH376_CMD_SET_ADDR] Waiting for data from data port\n");
+        break;
+
     default:
         dbg_printf("[WRITE][COMMAND][Unsupported] command &%02x not implemented\n", ch376->command);
         ch376->interface_status = 0;
@@ -2891,8 +3032,8 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_
             // Lignes suivantes utiles?
             ch376->interface_status = 127;
             ch376->command_status = CH376_INT_SUCCESS;
-	}
-	else if(data == CH376_VAR_CURRENT_OFFSET)
+	    }
+	    else if(data == CH376_VAR_CURRENT_OFFSET)
         {
             CH376_S32 file_offset = system_get_file_offset(&ch376->context, ch376->current_file);
 
@@ -2910,8 +3051,8 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_
             ch376->interface_status = 127;
             ch376->command_status = CH376_INT_SUCCESS;
         }
-	else
-	{
+	    else
+	    {
             dbg_printf("[WRITE][DATA][CH376_CMD_READ_VAR32] wrong command byte: looking for &68 or &6c, got &%02x\n", data);
 
             ch376->interface_status = 0;
@@ -2923,18 +3064,22 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_
         cancel_all_io(ch376);
         switch(data)
         {
-        case CH376_ARG_SET_USB_MODE_USB_HOST:
-            ch376->usb_mode = CH376_ARG_SET_USB_MODE_USB_HOST;
-            dbg_printf("[WRITE][DATA][CH376_SET_USB_MODE] USB host set\n");
-            break;
-        case CH376_ARG_SET_USB_MODE_SD_HOST:
-            ch376->usb_mode = CH376_ARG_SET_USB_MODE_SD_HOST;
-            dbg_printf("[WRITE][DATA][CH376_SET_USB_MODE] SD card set\n");
-            break;
-        default:
-            ch376->usb_mode = CH376_ARG_SET_USB_MODE_INVALID;
-            dbg_printf("[WRITE][DATA][CH376_SET_USB_MODE_CODE_INVALID] set\n");
-            break;
+            case CH376_ARG_SET_USB_MODE_USB_HOST:
+                ch376->usb_mode = CH376_ARG_SET_USB_MODE_USB_HOST;
+                dbg_printf("[WRITE][DATA][CH376_SET_USB_MODE] USB host set\n");
+                break;
+            case CH376_ARG_SET_USB_MODE_SD_HOST:
+                ch376->usb_mode = CH376_ARG_SET_USB_MODE_SD_HOST;
+                dbg_printf("[WRITE][DATA][CH376_SET_USB_MODE] SD card set\n");
+                break;
+            case CH376_ARG_SET_USB_HOST_RESET_USB_BUS:
+                ch376->usb_mode = CH376_ARG_SET_USB_HOST_RESET_USB_BUS;
+                dbg_printf("[WRITE][DATA][CH376_SET_USB_MODE] Reset usb bus\n");
+                break;
+            default:
+                ch376->usb_mode = CH376_ARG_SET_USB_MODE_INVALID;
+                dbg_printf("[WRITE][DATA][CH376_SET_USB_MODE_CODE_INVALID] set\n");
+                break;
         }
         break;
 
@@ -3094,11 +3239,105 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_
             ch376->command_status = CH376_RET_ABORT;
         }
         break;
+
+    // USB management
+    case CH376_CMD_SET_USB_SPEED:
+        ch376->usb_speed = data;
+        dbg_printf("[WRITE][DATA][CH376_CMD_SET_USB_SPEED] setting usb speed to : ");
+        if (ch376->usb_speed == CH376_USB_SPEED_FULL_12MBPS)
+            dbg_printf("CH376_USB_SPEED_FULL_12MBPS\n");
+        else if (ch376->usb_speed == CH376_USB_SPEED_FULL_1_5MBPS)
+            dbg_printf("CH376_USB_SPEED_FULL_1_5MBPS\n");
+        else if (ch376->usb_speed == CH376_USB_SPEED_LOW_1_5MBPS)
+            dbg_printf("CH376_USB_SPEED_LOW_1_5MBPS\n");
+        else
+            dbg_printf("Panic !!! Unknown speed mode : %d\n", data);
+        break;
+
+    case CH376_CMD_SET_REGISTER:
+        if (ch376->current_register_write == 0xff)
+        {
+            ch376->current_register_write = data;
+            dbg_printf("[WRITE][DATA][CH376_CMD_SET_REGISTER] register 0x%x selected\n", data);
+        }
+        else
+        {
+            // Setting value
+            dbg_printf("[WRITE][DATA][CH376_CMD_SET_REGISTER] register 0x%x set to 0x%x\n", ch376->current_register_write, data);
+            ch376->chip_registers[ch376->current_register_write] = data;
+            ch376->current_register_write = 0xff;
+        }
+        break;
+
+    case CH376_SET_USB_ADDR:
+        dbg_printf("[WRITE][DATA][CH376_SET_USB_ADDR] talking to 0x%x device\n", data);
+        ch376->current_device_address = data;
+        break;
+
+
+    case CH376_CMD_ISSUE_TKN_X:
+        if (ch376->issue_tkn_is_set == ISSUE_TKN_IS_NOT_SET)
+        {
+            dbg_printf("[WRITE][DATA][CH376_CMD_ISSUE_TKN_X] setting tkn with %x value\n", data);
+            ch376->issue_tkn = data;
+            ch376->issue_tkn_is_set = ISSUE_TKN_IS_SET;
+        }
+        else
+        {
+            dbg_printf("[WRITE][DATA][CH376_CMD_ISSUE_TKN_X] setting tkn with %x operation_descriptor, resetting tkn state ...\n", data);
+            ch376->issue_tkn_is_set = ISSUE_TKN_IS_NOT_SET;
+            ch376->operation_descriptor = data;
+        }
+        break;
+
+    case CH376_CMD_SET_CONFIG:
+        //USBDEVICE_Config;
+        // Looking for device with current usb address
+        int i;
+        for (i = 0; i < CH376_MAX_USB_DEVICES; i++) // We are looking device from 0 to max usb devices
+        {
+            if (ch376->usbdevices[i].USBDEVICE_Address == ch376->current_device_address && ch376->usbdevices[i].USBDEVICE_Is_Connected == USBDEVICE_IS_CONNECTED)
+                break;
+            else
+                 dbg_printf("Error %d for current device %d address : %d because device is %d connected\n", i, ch376->current_device_address, ch376->usbdevices[i].USBDEVICE_Address, USBDEVICE_IS_CONNECTED);
+        }
+        // We found device, setting to device
+        if (i < CH376_MAX_USB_DEVICES)
+        {
+            dbg_printf("[WRITE][DATA][CH376_CMD_SET_CONFIG] setting current 0x%x usb device with config 0x%x ...\n", ch376->current_device_address, data);
+            ch376->usbdevices[i].USBDEVICE_Config = data;
+        }
+        else
+            dbg_printf("[WRITE][DATA][CH376_CMD_SET_CONFIG] Panic we did not found device with usb address \n", ch376->current_device_address);
+        break;
+
+
+    case CH376_CMD_SET_ADDR:
+        // Device not connected
+        if (ch376->usbdevices[ch376->current_usb_device_to_set_adress].USBDEVICE_Is_Connected == USBDEVICE_IS_NOT_CONNECTED)
+        {
+            dbg_printf("[WRITE][DATA][CH376_CMD_SET_ADDR] No device connected with current 0 address\n");
+            ch376->interface_status = 0;
+            ch376->command_status = CH376_RET_ABORT; // Dunno what ch376 returns in that case when there is no connected devices
+        }
+        else
+        {
+            dbg_printf("[WRITE][DATA][CH376_CMD_SET_ADDR] current device on bus : configuring with 0x%x usb adress device id : %x\n", data, ch376->current_usb_device_to_set_adress);
+            ch376->usbdevices[ch376->current_usb_device_to_set_adress].USBDEVICE_Address = data;
+            ch376->current_usb_device_to_set_adress ++;
+            ch376->interface_status = 127;
+            ch376->command_status = CH376_INT_SUCCESS;
+
+        }
+
+        break;
     }
 
     dbg_printf("<< [WRITE][DATA] Write data &%02x status &%02x\n", data, ch376->command_status);
 
 }
+
+
 
 /* /// */
 
@@ -3106,6 +3345,7 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_
 
 struct ch376 * ch376_create(void *user_data)
 {
+    int i;
     struct ch376 *ch376 = system_alloc_mem(sizeof(struct ch376));
 
     if(ch376)
@@ -3114,6 +3354,28 @@ struct ch376 * ch376_create(void *user_data)
         {
             ch376->sdcard_drive_path = clone_string("ch376_sdcard_drive/");
             ch376->usb_drive_path = clone_string("ch376_usb_drive/");
+            ch376->usb_speed = CH376_USB_SPEED_FULL_12MBPS;
+            ch376->current_register_write = 0xff;
+            for (i = 0; i < CH376_MAX_USB_DEVICES; i++)
+            {
+                ch376->usbdevices[CH376_MAX_USB_DEVICES].USBDEVICE_Address = 0;
+                ch376->usbdevices[CH376_MAX_USB_DEVICES].USBDEVICE_Is_Connected = USBDEVICE_IS_NOT_CONNECTED;
+            }
+            ch376->current_usb_device_to_set_adress = 0;
+            ch376->issue_tkn_is_set = ISSUE_TKN_IS_NOT_SET;
+            //Connect an usb mass storage
+            ch376->device_connected_to_usb_port = USB_MASS_STORAGE_CLASS;
+            // Connect a mouse on usb port
+            //ch376->device_connected_to_usb_port = USB_MOUSE_CLASS;
+            ch376->usbdevices[0].USBDEVICE_Is_Connected = USBDEVICE_IS_CONNECTED;
+
+            ch376->hid_mouse_deltax = 0;
+            ch376->hid_mouse_deltay = 0;
+            int state;
+            state = SDL_GetMouseState(&ch376->hid_mouse_posx, &ch376->hid_mouse_posy);
+
+
+            ch376->current_device_address = 0;
             clear_structure(ch376);
         }
         else
