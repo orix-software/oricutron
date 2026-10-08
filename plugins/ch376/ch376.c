@@ -2337,15 +2337,28 @@ CH376_U8 ch376_read_data_port(struct ch376 *ch376)
 
                 ch376->hid_mouse_deltax = (signed char)x;
                 ch376->hid_mouse_deltay = (signed char)y;
+                int buttons;
+                buttons = SDL_GetMouseState(&x, &y);
 
-                if (ch376->hid_mouse_deltax == 0 && ch376->hid_mouse_deltay == 0)
+                // Warning ! wheel is not managed by SDL (SDL2 works)
+                // Let's theses comment, in order to remind that wheel must be managed (probably by another lib than SDL)
+                // SDL_Event event;
+                // SDL_PollEvent(&event);
+                // int wheelx, wheely;
+                // if (event.type == SDL_MOUSEWHEEL)
+                // {
+                //     wheelx = event.wheel.x;
+                //     wheely = event.wheel.y;
+                // }
+
+                if (ch376->hid_mouse_deltax == 0 && ch376->hid_mouse_deltay == 0 && buttons == 0 )
                     ch376->usb_data[0] = 0; // No movement
                 else
                     ch376->usb_data[0] = 1; // Must be checked under real ch376, which value it will return
-                ch376->usb_data[1] = 0; // button
+                ch376->usb_data[1] =  (signed char)buttons; // button
                 ch376->usb_data[2] = ch376->hid_mouse_deltax; // X
                 ch376->usb_data[3] = ch376->hid_mouse_deltay; // Y
-                ch376->usb_data[4] = 0; // wheel
+                ch376->usb_data[4] = 0;  // wheel not managed, see above why it's not managed yet
                 data_out = ch376->usb_data[0];
                 ch376->pos_in_usb_data ++;
 
