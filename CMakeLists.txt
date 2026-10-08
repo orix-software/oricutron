@@ -40,7 +40,6 @@ if (WIN32)
 endif (WIN32)
 
 if (UNIX)
-
   if (USE_SDL2)
     find_package(SDL2 REQUIRED)
     find_package(OpenGL)
@@ -118,7 +117,6 @@ SET (SRCS
   6502.c
   8912.c
   avi.c
-  plugins/ch376/ch376.c
   disk.c
   disk_pravetz.c
   font.c
@@ -127,13 +125,12 @@ SET (SRCS
   machine.c
   main.c
   monitor.c
-  plugins/ch376/oric_ch376_plugin.c
-  plugins/twilighte_board/oric_twilighte_board_plugin.c
   snapshot.c
   system_sdl.c
   tape.c
   ula.c
   via.c
+  plugins/assinie/periph.c
 )
 
 set(ORICUTRON_RC ${PROJECT_SOURCE_DIR}/msvc/Oricutron.rc)
@@ -151,9 +148,9 @@ endif (WIN32)
 if (UNIX)
   if (USE_SDL2)
     add_executable(Oricutron-sdl2 ${SRCS} ${SRCSDL})
-    target_link_libraries(Oricutron-sdl2 ${OPENGL_LIBRARIES} ${SDL2_LIBRARIES})
+    target_link_libraries(Oricutron-sdl2 ${OPENGL_LIBRARIES} ${SDL2_LIBRARIES} dl)
   else()
     add_executable(Oricutron ${SRCS} ${SRCGTK})
-    target_link_libraries(Oricutron ${GTK3_LIBRARIES} SDL GL X11)
+    target_link_libraries(Oricutron ${GTK3_LIBRARIES} SDL GL X11 dl)
   endif (USE_SDL2)
 endif (UNIX)

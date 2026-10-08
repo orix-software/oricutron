@@ -50,7 +50,10 @@
 #include "ula.h"
 #include "tape.h"
 #include "snapshot.h"
-#include "plugins/twilighte_board/oric_twilighte_board_plugin.h"
+// [Assinie--
+// #include "plugins/twilighte_board/oric_twilighte_board_plugin.h"
+#include "plugins/assinie/periph.h"
+// --]
 
 #define LOG_DEBUG 0
 
@@ -209,9 +212,13 @@ enum
   MSHOW_VIA2,
   MSHOW_AY,
   MSHOW_DISK,
-  MSHOW_TWIL,
-  MSHOW_LAST
+  // [-Assinie
+  // MSHOW_TWIL,
+  MSHOW_PERIPH,
+  // MSHOW_LAST
+  // -]
 };
+static int MSHOW_LAST = MSHOW_PERIPH+1;
 
 enum
 {
@@ -761,6 +768,14 @@ unsigned char mon_read( struct machine *oric, unsigned short addr )
     return oric->cpu.read( &oric->cpu, addr );
   }
 
+  // [-Assinie
+  if( ( addr & 0xff00 ) == 0x0300 )
+  {
+    if (device_present(oric, addr))
+      return (device_mon_read(oric, addr));
+  }
+  // -]
+
   if( ( addr & 0xff00 ) == 0x0300 )
   {
     if ( ( !oric->lightpen ) || ( addr < 0x3e0 ) || ( addr > 0x3e1 ) )
@@ -796,6 +811,10 @@ void mon_store_state( struct machine *oric )
 
   via2_old = oric->tele_via;
   via2_oldvalid = SDL_TRUE;
+
+  // [- Assinie
+  mon_store_state_periph(oric, SDL_TRUE);
+  // -]
 }
 
 void mon_set_modified( struct machine *oric )
@@ -1660,6 +1679,8 @@ void mon_update_disk( struct machine *oric )
   }
 }
 
+// [Assinie--
+#if 0
 void mon_update_twil( struct machine *oric )
 {
   if ( (oric->twilighteboard_activated == SDL_FALSE ) && (oric->ch376_activated == SDL_FALSE) )
@@ -1669,18 +1690,18 @@ void mon_update_twil( struct machine *oric )
   if ( oric->twilighteboard_activated )
   {
     int current_bank = oric->twilighte->current_bank & 0x07;
-    int is_ram = (current_bank == 0) || ((twilighteboard_oric_read(oric->twilighte, 0x342) & 0x20) && (current_bank < 5));
-    tzprintfpos( tz[TZ_TWIL], 2, 2, "Board version = %02X", (twilighteboard_oric_read(oric->twilighte, 0x342) & 0x07) );
-    tzprintfpos( tz[TZ_TWIL], 2, 4, "Bank set      = %02X", twilighteboard_oric_read(oric->twilighte, 0x343) );
-    tzprintfpos( tz[TZ_TWIL], 2, 5, "Bank hardware number = %02X", twilighte_board_mapping_bank(oric->twilighte) );
-    tzprintfpos( tz[TZ_TWIL], 2, 6, "Bank software number = %02X", twilighte_board_mapping_software_bank(oric->twilighte) );
+    int is_ram = (current_bank == 0) || ((twilighteboard_oric_read(oric->twilighte, 0x342) & 0x20));
+    tzprintfpos( tz[TZ_TWIL], 2, 2, "Board version = $%02X", (twilighteboard_oric_read(oric->twilighte, 0x342) & 0x07) );
+    tzprintfpos( tz[TZ_TWIL], 2, 4, "Bank set      = $%02X", twilighteboard_oric_read(oric->twilighte, 0x343) );
+    tzprintfpos( tz[TZ_TWIL], 2, 5, "Bank hardware number = $%02X", twilighte_board_mapping_bank(oric->twilighte) );
+    tzprintfpos( tz[TZ_TWIL], 2, 6, "Bank software number = $%02X", twilighte_board_mapping_software_bank(oric->twilighte) );
     tzprintfpos( tz[TZ_TWIL], 2, 7, "Bank type     = %s" , is_ram ? "SRAM  ": "EEPROM");
-    tzprintfpos( tz[TZ_TWIL], 2, 9, "Twil register = %02X", twilighteboard_oric_read(oric->twilighte, 0x342) );
-    tzprintfpos( tz[TZ_TWIL], 2, 10, "Bank register = %02X", twilighteboard_oric_read(oric->twilighte, 0x343) );
-    tzprintfpos( tz[TZ_TWIL], 2, 12, "IORB          = %02X", twilighteboard_oric_read(oric->twilighte, 0x320) );
-    tzprintfpos( tz[TZ_TWIL], 2, 13, "IORAh         = %02X", twilighteboard_oric_read(oric->twilighte, 0x321) );
-    tzprintfpos( tz[TZ_TWIL], 2, 14, "DDRB          = %02X", twilighteboard_oric_read(oric->twilighte, 0x322) );
-    tzprintfpos( tz[TZ_TWIL], 2, 15, "DDRA          = %02X", twilighteboard_oric_read(oric->twilighte, 0x323) );
+    tzprintfpos( tz[TZ_TWIL], 2, 9, "Twil register = $%02X", twilighteboard_oric_read(oric->twilighte, 0x342) );
+    tzprintfpos( tz[TZ_TWIL], 2, 10, "Bank register = $%02X", twilighteboard_oric_read(oric->twilighte, 0x343) );
+    tzprintfpos( tz[TZ_TWIL], 2, 12, "IORB          = $%02X", twilighteboard_oric_read(oric->twilighte, 0x320) );
+    tzprintfpos( tz[TZ_TWIL], 2, 13, "IORAh         = $%02X", twilighteboard_oric_read(oric->twilighte, 0x321) );
+    tzprintfpos( tz[TZ_TWIL], 2, 14, "DDRB          = $%02X", twilighteboard_oric_read(oric->twilighte, 0x322) );
+    tzprintfpos( tz[TZ_TWIL], 2, 15, "DDRA          = $%02X", twilighteboard_oric_read(oric->twilighte, 0x323) );
   }
 
   int offs = 8*tz[TZ_TWIL]->w+1;
@@ -1695,6 +1716,8 @@ void mon_update_twil( struct machine *oric )
   {
   }
 }
+#endif
+// --]
 
 void mon_state_reset( struct machine *oric )
 {
@@ -1703,6 +1726,9 @@ void mon_state_reset( struct machine *oric )
   ay_oldvalid = SDL_FALSE;
   via_oldvalid = SDL_FALSE;
   via2_oldvalid = SDL_FALSE;
+  // [- Assinie
+  mon_device_oldvalid(SDL_FALSE);
+  // -]
 }
 
 void mon_update_mwatch( struct machine *oric )
@@ -1804,9 +1830,19 @@ void mon_update( struct machine *oric )
       mon_update_disk( oric );
       break;
 
+    // [-Assinie
+/*
     case MSHOW_TWIL:
       mon_update_twil( oric );
       break;
+*/
+    // --]
+    // [-Assinie
+    case MSHOW_PERIPH:
+    default:
+      mon_update_periph( oric, mshow - MSHOW_PERIPH );
+      break;
+    // -]
   }
 
   switch( cshow )
@@ -1841,9 +1877,19 @@ void mon_render( struct machine *oric )
       oric->render_textzone( oric, TZ_DISK );
       break;
 
+    // [-Assinie
+/*
     case MSHOW_TWIL:
       oric->render_textzone( oric, TZ_TWIL );
       break;
+*/
+    // --]
+    // [-Assinie
+    // case MSHOW_PERIPH:
+    default:
+      oric->render_textzone( oric, TZ_PERIPH );
+      break;
+    // -]
   }
 
   switch( cshow )
@@ -2080,6 +2126,11 @@ void mon_init( struct machine *oric )
 
   mon_bpmsg[0] = 0;
   mshow = MSHOW_VIA;
+  // [- Assinie
+  MSHOW_LAST = MSHOW_PERIPH+mon_device_count()+1;
+  // MSHOW_LAST = MSHOW_PERIPH+mon_device_count();
+  dbg_printf("MSHOW_LAST = %d\n", MSHOW_LAST);
+  // -]
   cshow = CSHOW_CONSOLE;
   mon_asmmode = SDL_FALSE;
   mon_start_input();
@@ -2092,6 +2143,9 @@ void mon_init( struct machine *oric )
   cpu_oldvalid = SDL_FALSE;
   ay_oldvalid = SDL_FALSE;
   via_oldvalid = SDL_FALSE;
+  // [- Assinie
+  mon_device_oldvalid(SDL_FALSE);
+  // -]
 #if LOG_DEBUG
   debug_logfile = fopen( debug_logname, "w" );
 #endif
@@ -4220,6 +4274,11 @@ static unsigned int steppy_step( struct machine *oric )
   tape_patches( oric );
   via_clock( &oric->via, oric->cpu.icycles );
   ay_ticktock( &oric->ay, oric->cpu.icycles );
+
+  // [- Assinie
+  device_ticktock_all(oric, oric->cpu.icycles);
+  // -]
+
   if((oric->drivetype == DRV_MICRODISC) || (oric->drivetype == DRV_JASMIN)) wd17xx_ticktock( &oric->wddisk, oric->cpu.icycles );
   if( oric->type == MACH_TELESTRAT )
   {
@@ -4332,6 +4391,11 @@ SDL_bool mon_event( SDL_Event *ev, struct machine *oric, SDL_bool *needrender )
           tape_patches( oric );
           via_clock( &oric->via, oric->cpu.icycles );
           ay_ticktock( &oric->ay, oric->cpu.icycles );
+
+          // [- Assinie
+          device_ticktock_all(oric, oric->cpu.icycles);
+          // -]
+
           if((oric->drivetype == DRV_MICRODISC) || (oric->drivetype == DRV_JASMIN)) wd17xx_ticktock( &oric->wddisk, oric->cpu.icycles );
           if( oric->type == MACH_TELESTRAT )
           {
@@ -4362,7 +4426,11 @@ SDL_bool mon_event( SDL_Event *ev, struct machine *oric, SDL_bool *needrender )
             mshow = (mshow+1)%MSHOW_LAST;
           if( ( oric->drivetype == DRV_NONE ) && ( mshow == MSHOW_DISK ) )
             mshow = (mshow+1)%MSHOW_LAST;
-          if( ( oric->twilighteboard_activated == SDL_FALSE ) && ( mshow == MSHOW_TWIL ) )
+          // [Assinie--
+          // if( ( oric->twilighteboard_activated == SDL_FALSE ) && ( mshow == MSHOW_TWIL ) )
+          //   mshow = (mshow+1)%MSHOW_LAST;
+          // --]
+          while ( (mshow >= MSHOW_PERIPH) && (!mon_device_enabled_by_id(mshow - MSHOW_PERIPH)) )
             mshow = (mshow+1)%MSHOW_LAST;
           *needrender = SDL_TRUE;
           break;

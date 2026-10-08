@@ -103,10 +103,13 @@ struct machine
   struct symboltable  tele_banksyms[8];
   struct via          tele_via;
   struct acia         tele_acia;
-  struct ch376        *ch376;
-  struct twilighte    *twilighte;
-  SDL_bool            ch376_activated;
-  SDL_bool            twilighteboard_activated;
+  // [Assinie--
+  // struct ch376        *ch376;
+  // struct twilighte    *twilighte;
+  // SDL_bool            ch376_activated;
+  // SDL_bool            twilighteboard_activated;
+  // SDL_bool            ds1501_activated;
+  // --]
   int                 tele_currbank;
   unsigned char       tele_banktype;
 

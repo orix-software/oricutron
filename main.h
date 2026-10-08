@@ -19,7 +19,11 @@
 */
 
 SDL_bool read_config_string( char *buf, char *token, char *dest, Sint32 maxlen );
+SDL_bool read_config_path( char *buf, char *token, char *dest, Sint32 maxlen );
 SDL_bool read_config_bool( char *buf, char *token, SDL_bool *dest );
 SDL_bool read_config_option( char *buf, char *token, Sint32 *dest, char **options );
 SDL_bool read_config_int( char *buf, char *token, int *dest, int min, int max );
+
+void add_fileprefix( char *filename, int maxlen );
+
 void shut( struct machine *oric );

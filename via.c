@@ -38,6 +38,10 @@
 #include "joystick.h"
 #include "tape.h"
 
+// [Assinie--
+#include "plugins/assinie/periph.h"
+// --]
+
 // Send a byte to the printer. It sets up
 // two timers; one to count down and then
 // do the response from the printer, the
@@ -73,6 +77,15 @@ void lprintchar( struct machine *oric, char c )
     oric->prclock = 40;
     via_write_CA1( &oric->via, 1 );
   }
+  // [Assinie--
+  else
+  {
+    device_printer(c, SDL_FALSE);
+    // emulate ack signal
+    oric->prclock = 40;
+    via_write_CA1( &oric->via, 1 );
+  }
+  // --]
 }
 
 
@@ -448,6 +461,10 @@ void via_clock( struct via *v, unsigned int cycles )
       v->oric->prclock = 0;
       if( v->oric->printenable )
         via_write_CA1( v, 0 );
+      // [Assinie--
+      else
+        via_write_CA1( v, 0 );
+     // --]
     }
   }
 

@@ -80,6 +80,7 @@ static SDL_Renderer* g_renderer = NULL;
 static SDL_Texture *g_texture = NULL;
 static SDL_Surface* g_screen = NULL;
 static SDL_Window* g_window = NULL;
+static Uint32 g_windowID = 0;
 static SDL_Surface* g_icon = NULL;
 
 static int g_bpp = 0;
@@ -121,7 +122,6 @@ static void FreeResources(void)
     SDL_DestroyWindow(g_window);
     g_window = NULL;
   }
-
 }
 #endif
 
@@ -433,6 +433,7 @@ SDL_Surface* SDL_COMPAT_SetVideoMode(int width, int height, int bitsperpixel, Ui
 #else
 SDL_Surface* SDL_COMPAT_SetVideoMode(int width, int height, int bitsperpixel, Uint32 flags)
 {
+//  SDL_Color orange = {255, 127, 40, 255};
   g_width = width;
   g_height = height;
   g_bpp = bitsperpixel;
@@ -450,9 +451,17 @@ SDL_Surface* SDL_COMPAT_SetVideoMode(int width, int height, int bitsperpixel, Ui
 #ifndef __ANDROID__
   g_window = SDL_CreateWindow("oricutron", g_lastx, g_lasty,
                               g_width, g_height, flags);
+  g_windowID = SDL_GetWindowID( g_window );
+  fprintf(stderr, "g_windowID = %d\n", g_windowID );
+  fprintf(stderr, "flags      = %d\n", flags);
+
 #else
   g_window = SDL_CreateWindow("oricutron", SDL_WINDOWPOS_UNDEFINED,SDL_WINDOWPOS_UNDEFINED,
                               0, 0, SDL_WINDOW_FULLSCREEN_DESKTOP);
+  // [ Non vérifié
+  g_windowID = SDL_GetWindowID( g_window );
+  // ]
+
 #endif
   if (g_icon)
     SDL_SetWindowIcon(g_window, g_icon);
@@ -469,6 +478,7 @@ SDL_Surface* SDL_COMPAT_SetVideoMode(int width, int height, int bitsperpixel, Ui
     g_screen = SDL_CreateRGBSurface(0, g_width, g_height, g_bpp,
                                     RMASK, GMASK, BMASK, AMASK);
     g_renderer = SDL_CreateRenderer(g_window, -1, 0);
+
 #ifdef __ANDROID__
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "best");//"linear");
     SDL_RenderSetLogicalSize(g_renderer, g_width, g_height);
@@ -637,4 +647,76 @@ int32_t __isPlatformVersionAtLeast(int32_t Major, int32_t Minor, int32_t Submino
   (void) Subminor;
   return SDL_TRUE;
 }
+#endif
+
+#ifdef __OPENGL_AVAILABLE__
+#if SDL_MAJOR_VERSION == 1
+#else
+void SDL_COMPAT_MakeCurrent(SDL_Window *window, SDL_GLContext context)
+{
+  if (window == NULL)
+    SDL_GL_MakeCurrent(g_window, g_glcontext);
+  else
+    SDL_GL_MakeCurrent(window, context);
+}
+#endif
+#else
+// void SDL_COMPAT_MakeCurrent(SDL_Window *window, SDL_GLContext context)
+// {
+// }
+#endif
+
+#if SDL_MAJOR_VERSION == 1
+SDL_bool SDL_COMPAT_IsMainWindow(SDL_Event* event)
+{
+  return SDL_TRUE;
+}
+
+void SDL_COMPAT_RaiseWindow(void *window)
+{
+}
+
+#else
+SDL_bool SDL_COMPAT_IsMainWindow(SDL_Event *event)
+{
+  switch (event->type)
+  {
+    case SDL_WINDOWEVENT:
+      // fprintf(stderr, "IsMainWindow, type = WINDOWEVENT\n");
+      return (event->window.windowID == g_windowID) ? SDL_TRUE : SDL_FALSE;
+
+    case SDL_MOUSEMOTION:
+      // fprintf(stderr, "IsMainWindow, type = MOUSEMOTION\n");
+      return (event->motion.windowID == g_windowID) ? SDL_TRUE : SDL_FALSE;
+
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+      // fprintf(stderr, "IsMainWindow, type = MOUSEBUTTON\n");
+      return (event->button.windowID == g_windowID) ? SDL_TRUE : SDL_FALSE;
+
+    case SDL_KEYDOWN:
+    case SDL_KEYUP:
+      // fprintf(stderr, "IsMainWindow, type = KEY\n");
+      return (event->key.windowID == g_windowID) ? SDL_TRUE : SDL_FALSE;
+
+    case SDL_TEXTEDITING:
+      // fprintf(stderr, "IsMainWindow, type = TEXTEDITING\n");
+      return (event->edit.windowID == g_windowID) ? SDL_TRUE : SDL_FALSE;
+
+    case SDL_TEXTINPUT:
+      // fprintf(stderr, "IsMainWindow, type = TEXTINPUT\n");
+      return (event->text.windowID == g_windowID) ? SDL_TRUE : SDL_FALSE;
+  }
+  // fprintf(stderr, "IsMainWindow, type = %d\n", event->type);
+  return SDL_FALSE;
+}
+
+void SDL_COMPAT_RaiseWindow(SDL_Window *window)
+{
+  if (window == NULL)
+    SDL_RaiseWindow(g_window);
+  else
+    SDL_RaiseWindow(g_window);
+}
+
 #endif

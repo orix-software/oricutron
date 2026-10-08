@@ -68,6 +68,8 @@
 #include "snapshot.h"
 #include "keyboard.h"
 
+#include "plugins/assinie/periph.h"
+
 #ifdef _MSC_VER
 #if SDL_MAJOR_VERSION == 1
 #undef main
@@ -197,7 +199,7 @@ static void init_fileprefix( char *argv[] )
 
   fileprefix = "/data/data/com.emul.oricutron/files/";
 
-#elif defined(__linux__) || defined(__APPLE__)
+#elif defined(__linux__bad) || defined(__APPLE__)
 
   // Find program directory
   fileprefix = realpath( argv[0], 0 );           // convert to absolute path
@@ -636,8 +638,11 @@ static void load_config( struct start_opts *sto, struct machine *oric )
     if( read_config_joykey( &sto->lctmp[i], "kbjoy2_fire2", &oric->kbjoy2[5] ) ) continue;
     if( read_config_joykey( &sto->lctmp[i], "kbjoy2_fire3", &oric->kbjoy2[6] ) ) continue;
     if( read_config_bool(   &sto->lctmp[i], "diskautosave", &oric->diskautosave ) ) continue;
-    if( read_config_bool(   &sto->lctmp[i], "ch376",        &oric->ch376_activated) ) continue;
-    if( read_config_bool(   &sto->lctmp[i], "twilighte_board",&oric->twilighteboard_activated) ) continue;
+    // {Assinie--
+    // if( read_config_bool(   &sto->lctmp[i], "ch376",        &oric->ch376_activated) ) continue;
+    // if( read_config_bool(   &sto->lctmp[i], "twilighte_board",&oric->twilighteboard_activated) ) continue;
+    // if( read_config_bool(   &sto->lctmp[i], "ds1501"      ,&oric->ds1501_activated) ) continue;
+    //--]
     if( read_config_bool(   &sto->lctmp[i], "pravdiskautoboot", &oric->pravdiskautoboot ) ) continue;
     if( read_config_bool(   &sto->lctmp[i], "disable_menuscheme", &oric->disable_menuscheme ) ) continue;
     if( read_config_bool(   &sto->lctmp[i], "show_keyboard", &oric->show_keyboard ) ) continue;
@@ -789,7 +794,12 @@ SDL_bool init( struct machine *oric, int argc, char *argv[] )
   sto->start_syms_count = 0;
   sto->start_snapshot[0] = 0;
   sto->start_breakpoint = NULL;
-  oric->ch376_activated = SDL_FALSE;
+  // [Assinie--
+  // oric->ch376_activated = SDL_FALSE;
+  // oric->twilighteboard_activated = SDL_FALSE;
+  // oric->ds1501_activated = SDL_FALSE;
+  // --]
+
   fullscreen          = SDL_FALSE;
 #ifdef WIN32
   hwsurface           = SDL_TRUE;
@@ -1473,6 +1483,9 @@ void shut( struct machine *oric )
     shut_filerequester( oric );
     shut_msgbox( oric );
     shut_gui( oric );
+    // [- Assinie
+    shut_periph( oric );
+    // -]
   }
   if( need_sdl_quit )
     SDL_COMPAT_Quit( SDL_TRUE );
@@ -1515,6 +1528,10 @@ void frameloop_overclock( struct machine *oric, SDL_bool *framedone, SDL_bool *n
       /* Move the emulation on */
       via_clock( &oric->via, instcycles );
       ay_ticktock( &oric->ay, instcycles );
+
+      // [- Assinie
+      device_ticktock_all(oric, instcycles);
+      // -]
 
       switch( oric->drivetype )
       {
@@ -1573,11 +1590,17 @@ void frameloop_normal( struct machine *oric, SDL_bool *framedone, SDL_bool *need
         break;
       }
 
-      if (!oric->twilighteboard_activated)
-      tape_patches( oric );
+      // [Assinie--
+      // if (!oric->twilighteboard_activated)
+      //   tape_patches( oric );
+      //
 
       via_clock( &oric->via, oric->cpu.icycles );
       ay_ticktock( &oric->ay, oric->cpu.icycles );
+
+      // [- Assinie
+      device_ticktock_all(oric, oric->cpu.icycles);
+      // -]
 
       switch( oric->drivetype )
       {
@@ -1636,6 +1659,7 @@ void once_per_frame( struct machine *oric )
     }
   }
 }
+
 
 static void loop_handler( void* arg )
 {
@@ -1744,37 +1768,60 @@ static void loop_handler( void* arg )
     }
 
     do {
-       switch (event->type) {
-            case SDL_COMPAT_ACTIVEEVENT: {
-                if (SDL_COMPAT_IsAppActive(event)) {
-                    oric->shut_render(oric);
-                    oric->init_render(oric);
-                    ctx->needrender = SDL_TRUE;
-                }
-            }
-                break;
-            case SDL_QUIT:
-                done = SDL_TRUE;
-                break;
-
-            default:
-                switch (oric->emu_mode) {
-                    case EM_MENU:
-                        done |= menu_event(event, oric, &ctx->needrender);
-                        break;
-
-                    case EM_RUNNING:
-                        done |= emu_event(event, oric, &ctx->needrender);
-                        break;
-#ifndef WWW_NO_MONITOR
-                    case EM_DEBUG:
-                        done |= mon_event(event, oric, &ctx->needrender);
-                        break;
+      // [- Assinie
+#if SDL_MAJOR_VERSION == 1
+#else
+      if (SDL_COMPAT_IsMainWindow(event))
+      {
+      // --]
 #endif
-                }
-        }
-        if (oric->show_keyboard)
-            keyboard_event(event, oric, &ctx->needrender);
+         switch (event->type) {
+              case SDL_COMPAT_ACTIVEEVENT: {
+#if SDL_MAJOR_VERSION == 1
+                      if (SDL_COMPAT_IsAppActive(event)) {
+                          oric->shut_render(oric);
+                          oric->init_render(oric);
+                          ctx->needrender = SDL_TRUE;
+                      }
+#else
+                      if ( (event->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) || (event->window.event == SDL_WINDOWEVENT_EXPOSED) )
+                      {
+                          fprintf(stderr, "** Main: render\n");
+                          render( oric );
+                          ctx->needrender = SDL_FALSE;
+                      }
+#endif
+              }
+                  break;
+              case SDL_QUIT:
+                  done = SDL_TRUE;
+                  break;
+
+              default:
+                  switch (oric->emu_mode) {
+                      case EM_MENU:
+                          done |= menu_event(event, oric, &ctx->needrender);
+                          break;
+
+                      case EM_RUNNING:
+                          done |= emu_event(event, oric, &ctx->needrender);
+                          break;
+  #ifndef WWW_NO_MONITOR
+                      case EM_DEBUG:
+                          done |= mon_event(event, oric, &ctx->needrender);
+                          break;
+  #endif
+                  }
+          }
+          if (oric->show_keyboard)
+              keyboard_event(event, oric, &ctx->needrender);
+      // [- Assinie
+#if SDL_MAJOR_VERSION == 1
+#else
+        } else
+          device_sdl_event(event);
+#endif
+      // --]
       } while ( SDL_PollEvent( event ) );
 
 #if defined(WWW)

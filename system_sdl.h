@@ -149,8 +149,18 @@ void SDL_COMPAT_SetEventFilter(SDL_EventFilter filter);
 void SDL_COMPAT_Quit(SDL_bool freeall);
 void SDL_COMPAT_TakeScreenshot(char *fname);
 
+#if SDL_MAJOR_VERSION == 1
+#else
+SDL_bool SDL_COMPAT_IsMainWindow(SDL_Event *event);
+void SDL_COMPAT_RaiseWindow(SDL_Window *window);
+#endif
+
 #ifdef __OPENGL_AVAILABLE__
 void SDL_COMPAT_GL_SwapBuffers(void);
+#if SDL_MAJOR_VERSION == 1
+#else
+void SDL_COMPAT_MakeCurrent(SDL_Window *window, SDL_GLContext context);
+#endif
 #endif
 
 

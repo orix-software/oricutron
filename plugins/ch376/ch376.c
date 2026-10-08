@@ -8,20 +8,20 @@
  *   Christian 'Assinie' Lardière                                   *
  *                                                                  *
  ** ch376.c *********************************************************/
-
 /*
  Changes:
 
+ 10.03.2023 - Assinie: Fix bug : . and .. was reading as right entry. Now, it's skipped
+ 02.04.2022 - Assinie: Added support for CMD_REAF_VAR32 (GET_FILE_SIZE and CURRENT_OFFSET only)
+ 01.02.2021 - Assinie: Fix time struct (Linux Only)
  07.12.2017 - Assinie: Added support for CMD_GET_FILE_SIZE
  06.12.2017 - Assinie: Added support for CMD_DISK_CAPACITY
  13.11.2017 - Assinie: Improve '*' wildcard support for CMD_FILE_OPEN
  05.10.2017 - Assinie: Added support for CMD_DIR_CREATE and CMD_FILE_ERASE (Linux only)
  21.08.2017 - Jede   : Added support for CMD_DIR_CREATE and CMD_FILE_ERASE (WIN32 only)
  22.07.2017 - OffseT : Added support for CMD_DIR_CREATE and CMD_FILE_ERASE (Added related Amiga system APIs only)
- 01.02.2021 - Assinie: Fix time struct (Linux Only)
- 02.04.2022 - Assinie: Added support for CMD_READ_VAR32 (FILE_SIZE and CURRENT_OFFSET only) (Linux Only)
- 10.03.2023 - Assinie: Fix bug : . and .. was reading as right entry. Now, it's skipped
-*/
+
+ */
 /* /// "Portable includes" */
 
 
@@ -44,7 +44,7 @@ extern struct Library *SysBase;
 #include <sys/stat.h>
 //@iss #include <shlwapi.h>
 
-#elif defined(__unix__) || defined(__APPLE__) || defined(__HAIKU__) || defined(__MINT__)
+#elif defined(__unix__) || defined(__APPLE__) || defined(__HAIKU__)
 
 #include <stdlib.h>
 #include <stdint.h>
@@ -53,14 +53,8 @@ extern struct Library *SysBase;
 #include <dirent.h>
 #include <unistd.h>
 #include <string.h>
-#ifdef __ANDROID__
-#include <sys/vfs.h>
-#define statvfs statfs
-#else
 #include <sys/statvfs.h>
-#endif
 #include <sys/stat.h>
-#include <time.h>
 
 #else
 #error "FixMe!"
@@ -114,8 +108,8 @@ extern struct Library *SysBase;
 #define CH376_ERR_MISS_FILE  0x42
 #define CH376_ERR_FOUND_NAME 0x43
 
-#define CH376_RET_SUCCESS    0x51
-#define CH376_RET_ABORT      0x5f
+#define CH376_RET_SUCCESS 0x51
+#define CH376_RET_ABORT   0x5f
 
 #define CH376_INT_SUCCESS    0x14
 #define CH376_INT_DISK_READ  0x1d
@@ -125,7 +119,7 @@ extern struct Library *SysBase;
 
 /* /// "CH376 data structures" */
 
-#define CMD_DATA_REQ_SIZE  0xff
+#define CMD_DATA_REQ_SIZE 0xff
 
 // Attributes
 #define DIR_ATTR_READ_ONLY 0x01
@@ -212,6 +206,7 @@ struct ch376
     union CommandData cmd_data;
     CH376_U8 nb_bytes_in_cmd_data;
     CH376_U8 pos_rw_in_cmd_data;
+    CH376_U8 buffer_read_count;
 
     CH376_U16 bytes_to_read_write;
 
@@ -225,6 +220,9 @@ struct ch376
 
     char *sdcard_drive_path;
     char *usb_drive_path;
+
+    CH376_S32 current_pos;
+
 };
 
 /* /// */
@@ -247,11 +245,11 @@ static const char * normalize_pattern(const char *pattern, char *normalized_patt
 /* /// "Portable operating system-dependent prototypes" */
 
 // Allocate "size" byte of memory
-static void * system_alloc_mem(int size);
+/* static */ void * system_alloc_mem(int size);
 
 // Free memory previously allocated with system_alloc_mem
 // It is safe to call it with NULL
-static void system_free_mem(void *ptr);
+/* static */ void system_free_mem(void *ptr);
 
 // Initialize the operating system dependent context
 // User data may be used if external data is required for such initialization
@@ -259,6 +257,9 @@ static CH376_BOOL system_init_context(CH376_CONTEXT *context, UNUSED void *user_
 
 // Release the operating system dependent context previously initialized by system_init_context
 static void system_clean_context(CH376_CONTEXT *context);
+
+// Returns true if the dir_lock points to the root_dir
+static CH376_BOOL system_is_root_dir(CH376_CONTEXT *context, CH376_LOCK dir_lock, CH376_LOCK root_dir);
 
 // Fill the disk_info structure with information of the disk from which the lock was obtained
 static CH376_BOOL system_get_disk_info(CH376_CONTEXT *context, CH376_LOCK root_lock, struct DiskQuery *disk_info);
@@ -352,6 +353,13 @@ static void system_clean_context(CH376_CONTEXT *context)
 {
   if(context->DOSBase != NULL)
     CloseLibrary(context->DOSBase);
+}
+
+static CH376_BOOL system_is_root_dir(CH376_CONTEXT *context, CH376_LOCK dir_lock, CH376_LOCK root_dir)
+{
+    struct Library *DOSBase = context->DOSBase;
+
+    return SameLock(dir_lock, root_dir) == LOCK_SAME;
 }
 
 static CH376_BOOL system_get_disk_info(CH376_CONTEXT *context, CH376_LOCK root_lock, struct DiskQuery *disk_info)
@@ -736,6 +744,14 @@ static void system_clean_context(CH376_CONTEXT *context)
     // Nothing to do?
 }
 
+static CH376_BOOL system_is_root_dir(CH376_CONTEXT *context, CH376_LOCK dir_lock, CH376_LOCK root_dir)
+{
+    if ((dir_lock->path != (CH376_LOCK) 0) && (root_dir->path  != (CH376_LOCK) 0))
+        return strncmp(dir_lock->path, root_dir->path, MAX_PATH) == 0;
+
+    return CH376_FALSE;
+}
+
 static CH376_BOOL system_get_disk_info(CH376_CONTEXT *context, CH376_LOCK root_lock, struct DiskQuery *disk_info)
 {
     BOOL got_info = FALSE;
@@ -1071,12 +1087,12 @@ static CH376_S32 system_get_file_offset(CH376_CONTEXT *context, CH376_FILE file)
 #define dbg_printf(...)
 #endif
 
-static void * system_alloc_mem(int size)
+/* static */ void * system_alloc_mem(int size)
 {
     return malloc(size);
 }
 
-static void system_free_mem(void *ptr)
+/* static */ void system_free_mem(void *ptr)
 {
     if (ptr)
         free(ptr);
@@ -1093,6 +1109,14 @@ static void system_clean_context(CH376_CONTEXT *context)
   /* Nothing to do */
 }
 
+static CH376_BOOL system_is_root_dir(CH376_CONTEXT *context, CH376_LOCK dir_lock, CH376_LOCK root_dir)
+{
+    if ((dir_lock != (CH376_LOCK) 0) && (root_dir  != (CH376_LOCK) 0))
+        return strncmp(dir_lock, root_dir, PATH_MAX) == 0;
+
+    return CH376_FALSE;
+}
+
 static CH376_BOOL system_get_disk_info(CH376_CONTEXT *context, CH376_LOCK root_lock, struct DiskQuery *disk_info)
 {
     CH376_BOOL got_info = CH376_FALSE;
@@ -1104,7 +1128,12 @@ static CH376_BOOL system_get_disk_info(CH376_CONTEXT *context, CH376_LOCK root_l
         if(statvfs(root_lock, &stats) == 0)
         {
             int64_t total_sector = (stats.f_blocks * stats.f_bsize) / 512;
-            int64_t free_sector = (stats.f_bfree * stats.f_bsize) / 512;
+            // int64_t free_sector = (stats.f_bfree * stats.f_bsize) / 512;
+            int64_t free_sector = (stats.f_bavail * stats.f_bsize) / 512;
+	    dbg_printf("\n*** f_frsize=%ld, f_bsize=%ld\n", stats.f_frsize, stats.f_bsize);
+	    dbg_printf(  "*** f_blocks=%ld, f_bsize=%ld\n", stats.f_blocks, stats.f_bsize);
+	    dbg_printf(  "*** f_bfree =%ld, f_bsize=%ld\n", stats.f_bfree , stats.f_bsize);
+	    dbg_printf(  "*** f_bavail=%ld, f_bsize=%ld\n", stats.f_bavail, stats.f_bsize);
 
             disk_info->DISK_TotalSector[0] = (total_sector & 0x000000ff) >>  0;
             disk_info->DISK_TotalSector[1] = (total_sector & 0x0000ff00) >>  8;
@@ -1184,7 +1213,7 @@ static FILE * file_open(const char *file_name,  CH376_LOCK root_lock, const char
     }
 
     file = fopen(file_name, mode);
-
+dbg_printf("=== file_open(%s)\n", file_name);
     if(old_dir)
     {
         chdir(old_dir);
@@ -1262,6 +1291,12 @@ static CH376_FILE system_file_open_existing(CH376_CONTEXT *context, const char *
 
     fp = file_open(file_name, root_lock, "rb+");
 
+    if (fp == NULL)
+    {
+        // Maybe read only file, try reopen
+        fp = file_open(file_name, root_lock, "rb");
+    }
+
     return fp;
 }
 
@@ -1288,7 +1323,7 @@ static CH376_S32 system_file_seek(CH376_CONTEXT *context, CH376_FILE file, int p
 
 static CH376_S32 system_file_read(CH376_CONTEXT *context, CH376_FILE file, void *buffer, CH376_S32 size)
 {
-    dbg_printf("system_file_read trying to read %d bytes\n", size);
+    dbg_printf("system_file_read trying to read %d bytes (%d, %x)\n", size, file, buffer);
 
     if(file)
         return fread(buffer, 1, size, file);
@@ -1318,6 +1353,7 @@ static CH376_DIR system_start_examine_directory(CH376_CONTEXT *context, CH376_LO
 
     return fib;
 }
+#include <time.h>
 
 static CH376_BOOL system_go_examine_directory(CH376_CONTEXT *context, CH376_LOCK dir_lock, CH376_DIR fib, struct FatDirInfo *dir_info, char *pattern)
 {
@@ -1347,11 +1383,8 @@ static CH376_BOOL system_go_examine_directory(CH376_CONTEXT *context, CH376_LOCK
                 dir_info->DIR_Attr |= DIR_ATTR_DIRECTORY;
             if((file_stat.st_mode & S_IWUSR) == 0) {
                 dir_info->DIR_Attr |= DIR_ATTR_READ_ONLY;
-                dbg_printf("--- READ ONLY ---");
+            dbg_printf("--- READ ONLY ---");
             }
-
-// FIXME: begin-of-implemented for Linux and Windows
-#if defined(__linux__) || defined(WIN32)
 
             dbg_printf("system_go_examine_directory defined file attributes: %04o -> %02x\n", file_stat.st_mode, dir_info->DIR_Attr);
             if (file_stat.st_ctim.tv_sec == 0)
@@ -1390,16 +1423,6 @@ static CH376_BOOL system_go_examine_directory(CH376_CONTEXT *context, CH376_LOCK
                 dos_mtime = DIR_MAKE_FILE_TIME(timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
                 dbg_printf("system_go_examine_directory defined file mdate/time: %s", asctime(timeinfo));
             }
-#else
-            // silence compiler warnings
-            timeinfo = 0;
-            dos_ctime = 0;
-            dos_cdate = 0;
-            dos_mtime = 0;
-            dos_mdate = 0;
-            dos_adate = 0;
-#endif
-// FIXME: end-of-implemented for Linux and Windows
 
             dir_info->DIR_NTRes = 0;
             dir_info->DIR_CrtTimeTenth = 0;
@@ -1523,6 +1546,7 @@ static void clear_structure(struct ch376 *ch376)
     ch376->current_dir_lock = (CH376_LOCK)0;
     ch376->current_file = (CH376_FILE)0;
     ch376->current_directory_browsing = (CH376_DIR)0;
+    ch376->current_pos = (CH376_S32)0;
 }
 
 static void cancel_all_io(struct ch376 *ch376)
@@ -1557,14 +1581,14 @@ static int normalize_char(char c)
 }
 
 // Normalized a dos filename in 8.3 format
-// Return NULL if not possible
+// Return NULL if not possible or if filename is '.' or '..'
 static const char * normalize_file_name(const char *file_name, char *normalized_file_name)
 {
     int i = 0;
     int j = 0;
     int c;
 
-    dbg_printf("normalize_file_name: %s\n", file_name);
+    dbg_printf("normalize_file_name: '%s'\n", file_name);
 
     // '.' or '..'
     if(file_name[0] == '.')
@@ -1600,7 +1624,7 @@ static const char * normalize_file_name(const char *file_name, char *normalized_
     }
     else
     {
-        dbg_printf("normalize_file_name impossible: %s (%d=%c,%d=%c)\n", file_name, i, file_name[i], j, normalized_file_name[j]);
+        dbg_printf("normalize_file_name impossible: '%s' (%d=%c,%d=%c)\n", file_name, i, file_name[i], j, normalized_file_name[j]);
         return NULL;
     }
 
@@ -1616,11 +1640,11 @@ static const char * normalize_file_name(const char *file_name, char *normalized_
 
     if(file_name[i] != '\0')
     {
-        dbg_printf("normalize_file_name impossible: %s (%d=%c,%d=%c)\n", file_name, i, file_name[i], j, normalized_file_name[j]);
+        dbg_printf("normalize_file_name impossible: '%s' (%d=%c,%d=%c)\n", file_name, i, file_name[i], j, normalized_file_name[j]);
         return NULL;
     }
 
-    dbg_printf("normalize_file_name done: %s (%d=&%02x,%d=&%02x)\n", file_name, i, file_name[i], j, normalized_file_name[j]);
+    dbg_printf("normalize_file_name done: '%s' (%d=&%02x,%d=&%02x)\n", file_name, i, file_name[i], j, normalized_file_name[j]);
 
     for(; j<11; j++)
     {
@@ -1668,8 +1692,13 @@ static void file_read_chunk(struct ch376 *ch376)
     else
         bytes_to_read_now = ch376->bytes_to_read_write;
 
-    bytes_actually_read = system_file_read(&ch376->context, ch376->current_file, &ch376->cmd_data.CMD_IOBuffer, bytes_to_read_now);
+    ch376->buffer_read_count = (ch376->buffer_read_count + 1) % 0x03;
+    if (!ch376->buffer_read_count && bytes_to_read_now > 2)
+        bytes_to_read_now = 2;
 
+dbg_printf("\n*** read count/ %d\n", ch376->buffer_read_count);
+    bytes_actually_read = system_file_read(&ch376->context, ch376->current_file, &ch376->cmd_data.CMD_IOBuffer, bytes_to_read_now);
+//dbg_printf("*** bytes_to_read_now=%d, bytes actually_read=%d, feof=%d, ferror=%d\n",bytes_to_read_now, bytes_actually_read,feof(ch376->current_file),ferror(ch376->current_file));
     if(bytes_actually_read >= 0)
     {
         ch376->bytes_to_read_write -= (CH376_U16)bytes_actually_read;
@@ -1737,7 +1766,7 @@ static void file_write_chunk(struct ch376 *ch376)
     }
     else
     {
-        dbg_printf("[WRITE][DATA][CH376_CMD_BYTE_WRITE] aborted: write failure\n");
+        dbg_printf("[WRITE][DATA][CH376_CMD_BYTE_WRITE] aborted: write failure: write %d, written %d\n", bytes_to_write_now, bytes_actually_written);
 
         ch376->nb_bytes_in_cmd_data = 0;
         ch376->interface_status = 0;
@@ -1904,6 +1933,9 @@ CH376_U8 ch376_read_data_port(struct ch376 *ch376)
             {
                 data_out = ch376->cmd_data.CMD_IOBuffer[ch376->pos_rw_in_cmd_data];
 
+                if (!ch376->current_file_is_directory)
+                    ++ch376->current_pos;
+
                 dbg_printf("[READ][DATA][CH376_CMD_RD_USB_DATA0] read \"%c\" (&%02x) from i/o buffer at position &%02x\n", data_out, data_out, ch376->pos_rw_in_cmd_data);
 
                 if(++ch376->pos_rw_in_cmd_data == ch376->nb_bytes_in_cmd_data)
@@ -1992,12 +2024,19 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
         cancel_all_io(ch376);
         // If directory is available, we consider that it's mounted!
         if(ch376->usb_mode == CH376_ARG_SET_USB_MODE_SD_HOST)
+	{
             ch376->root_dir_lock = system_obtain_directory_lock(&ch376->context, ch376->sdcard_drive_path, NULL);
+            // ch376->current_dir_lock = system_clone_directory_lock(&ch376->context, ch376->root_dir_lock);
+	}
         else if(ch376->usb_mode == CH376_ARG_SET_USB_MODE_USB_HOST)
+	{
             ch376->root_dir_lock = system_obtain_directory_lock(&ch376->context, ch376->usb_drive_path, NULL);
+            // ch376->current_dir_lock = system_clone_directory_lock(&ch376->context, ch376->root_dir_lock);
+	}
 
         if(ch376->root_dir_lock)
         {
+            ch376->current_dir_lock = system_clone_directory_lock(&ch376->context, ch376->root_dir_lock);
             ch376->cmd_data.CMD_MountInfo.MOUNT_DeviceType = 0;
             ch376->cmd_data.CMD_MountInfo.MOUNT_RemovableMedia = 0;
             ch376->cmd_data.CMD_MountInfo.MOUNT_Versions = 0;
@@ -2008,12 +2047,12 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
             ch376->cmd_data.CMD_MountInfo.MOUNT_MiscFlag = 0;
             ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[0] = 'J';
             ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[1] = 'E';
-            ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[2] = 'D';
-            ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[3] = 'E';
-            ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[4] = '+';
-            ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[5] = 'O';
-            ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[6] = 'F';
-            ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[7] = 'T';
+            ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[2] = '+';
+            ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[3] = 'O';
+            ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[4] = 'F';
+            ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[5] = '+';
+            ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[6] = 'A';
+            ch376->cmd_data.CMD_MountInfo.MOUNT_VendorIdStr[7] = 'S';
             ch376->cmd_data.CMD_MountInfo.MOUNT_ProductIdStr[ 0] = 'C';
             ch376->cmd_data.CMD_MountInfo.MOUNT_ProductIdStr[ 1] = 'H';
             ch376->cmd_data.CMD_MountInfo.MOUNT_ProductIdStr[ 2] = '3';
@@ -2030,10 +2069,10 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
             ch376->cmd_data.CMD_MountInfo.MOUNT_ProductIdStr[13] = 'R';
             ch376->cmd_data.CMD_MountInfo.MOUNT_ProductIdStr[14] = ' ';
             ch376->cmd_data.CMD_MountInfo.MOUNT_ProductIdStr[15] = ' ';
-            ch376->cmd_data.CMD_MountInfo.MOUNT_ProductRevStr[0] = 'F';
-            ch376->cmd_data.CMD_MountInfo.MOUNT_ProductRevStr[1] = 'A';
-            ch376->cmd_data.CMD_MountInfo.MOUNT_ProductRevStr[2] = 'M';
-            ch376->cmd_data.CMD_MountInfo.MOUNT_ProductRevStr[3] = 'E';
+            ch376->cmd_data.CMD_MountInfo.MOUNT_ProductRevStr[0] = '0';
+            ch376->cmd_data.CMD_MountInfo.MOUNT_ProductRevStr[1] = '1';
+            ch376->cmd_data.CMD_MountInfo.MOUNT_ProductRevStr[2] = '0';
+            ch376->cmd_data.CMD_MountInfo.MOUNT_ProductRevStr[3] = '0';
 
             dbg_printf("[WRITE][COMMAND][CH376_CMD_DISK_MOUNT] drive directory is found (mounted :); additional data available\n");
 
@@ -2087,14 +2126,22 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
                 // wildcard?
                 if(strchr(ch376->cmd_data.CMD_FileName,'*') || strchr(ch376->cmd_data.CMD_FileName,'?'))
                 {
+		    // Directory?
+		    if (ch376->current_file_is_directory)
+		    {
                     dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_OPEN] examining directory contents\n");
-
                     // Start a directory examine session
                     system_finish_examine_directory(&ch376->context, ch376->current_directory_browsing);
                     ch376->current_directory_browsing = system_start_examine_directory(&ch376->context, ch376->current_dir_lock);
                     normalize_pattern(ch376->cmd_data.CMD_FileName, ch376->dir_pattern);
 
                     goto file_enum_go;
+		    }
+
+                    dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_OPEN] examining directory contents: not a directory\n");
+                    ch376->interface_status = 0;
+                    ch376->command_status = CH376_ERR_MISS_FILE;
+
                 }
                 else
                 {
@@ -2129,6 +2176,9 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
                             ch376->interface_status = 127; // Found :)
                             ch376->command_status = CH376_INT_SUCCESS;
                             ch376->current_file_is_directory = CH376_FALSE;
+                            strncpy(ch376->dir_pattern, fixed_file_name, sizeof(fixed_file_name));
+                            // ch376->buffer_read_count = 0; // Init read buffer count (also needed when opendir?)
+                            ch376->current_pos = (CH376_S32)0;
                         }
                         else
                         {
@@ -2185,6 +2235,7 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
                 {
                     ch376->interface_status = 127; // Found :)
                     ch376->command_status = CH376_INT_SUCCESS;
+                    ch376->current_pos = (CH376_S32)0;
                 }
                 else
                 {
@@ -2208,6 +2259,7 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
         if(ch376->root_dir_lock)
         {
             char fixed_file_name[13]; // Max = 8 + '.' + 3 + '\0'
+            CH376_LOCK created_dir_lock;
             CH376_FILE existing_file;
             int i = 0;
 
@@ -2222,41 +2274,57 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
 
             trim_file_name(&ch376->cmd_data.CMD_FileName[i], fixed_file_name);
 
-            existing_file = system_file_open_existing(&ch376->context, fixed_file_name, ch376->current_dir_lock);
+            created_dir_lock = system_obtain_directory_lock(&ch376->context, fixed_file_name, ch376->current_dir_lock);
 
-            if(existing_file)
-            {
-                system_file_close(&ch376->context, existing_file);
-                ch376->interface_status = 0;
-                ch376->command_status = CH376_ERR_FOUND_NAME;
-            }
-            else
-            {
-                CH376_LOCK created_dir_lock;
+           // Enter new directory?
+           if(created_dir_lock)
+           {
+                dbg_printf("[WRITE][COMMAND][CH376_CMD_DIR_CREATE] entering existing directory: %s\n", &ch376->cmd_data.CMD_FileName[i]);
 
-                // Already created?
-                created_dir_lock = system_obtain_directory_lock(&ch376->context, fixed_file_name, ch376->current_dir_lock);
+                system_release_directory_lock(&ch376->context, ch376->current_dir_lock);
+                ch376->current_dir_lock = created_dir_lock;
 
-                if (!created_dir_lock)
-                    created_dir_lock = system_create_directory(&ch376->context, fixed_file_name, ch376->current_dir_lock);
+                ch376->interface_status = 127;
+                ch376->command_status = CH376_INT_SUCCESS;
+           }
+           else
+           {
+                existing_file = system_file_open_existing(&ch376->context, fixed_file_name, ch376->current_dir_lock);
 
-                // Actually created?
-                if(created_dir_lock)
+                if(existing_file)
                 {
-                    dbg_printf("[WRITE][COMMAND][CH376_CMD_DIR_CREATE] entering created directory: %s\n", &ch376->cmd_data.CMD_FileName[i]);
-
-                    system_release_directory_lock(&ch376->context, ch376->current_dir_lock);
-                    ch376->current_dir_lock = created_dir_lock;
-
-                    ch376->interface_status = 127;
-                    ch376->command_status = CH376_INT_SUCCESS;
+                    system_file_close(&ch376->context, existing_file);
+                    ch376->interface_status = 0;
+                    ch376->command_status = CH376_ERR_FOUND_NAME;
                 }
                 else
                 {
-                    dbg_printf("[WRITE][COMMAND][CH376_CMD_DIR_CREATE] directory could not be created: %s\n", &ch376->cmd_data.CMD_FileName[i]);
+                    // CH376_LOCK created_dir_lock;
 
-                    ch376->interface_status = 0;
-                    ch376->command_status = CH376_ERR_MISS_FILE;
+                    // Already created?
+                    created_dir_lock = system_obtain_directory_lock(&ch376->context, fixed_file_name, ch376->current_dir_lock);
+
+                    if (!created_dir_lock)
+                        created_dir_lock = system_create_directory(&ch376->context, fixed_file_name, ch376->current_dir_lock);
+
+                    // Actually created?
+                    if(created_dir_lock)
+                    {
+                        dbg_printf("[WRITE][COMMAND][CH376_CMD_DIR_CREATE] entering created directory: %s\n", &ch376->cmd_data.CMD_FileName[i]);
+
+                        system_release_directory_lock(&ch376->context, ch376->current_dir_lock);
+                        ch376->current_dir_lock = created_dir_lock;
+
+                        ch376->interface_status = 127;
+                        ch376->command_status = CH376_INT_SUCCESS;
+                    }
+                    else
+                    {
+                        dbg_printf("[WRITE][COMMAND][CH376_CMD_DIR_CREATE] directory could not be created: %s\n", &ch376->cmd_data.CMD_FileName[i]);
+
+                        ch376->interface_status = 0;
+                        ch376->command_status = CH376_ERR_MISS_FILE;
+                    }
                 }
             }
         }
@@ -2274,45 +2342,52 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
         // mounted?
         if(ch376->root_dir_lock)
         {
-            char fixed_file_name[13]; // Max = 8 + '.' + 3 + '\0'
-            int i = 0;
-            CH376_BOOL file_erased = CH376_FALSE;
-
-            // back to root?
-            if(ch376->cmd_data.CMD_FileName[i] == '/')
+            if(ch376->current_file)
             {
-                dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_ERASE] opening root directory\n");
-                system_release_directory_lock(&ch376->context, ch376->current_dir_lock);
-                ch376->current_dir_lock = system_clone_directory_lock(&ch376->context, ch376->root_dir_lock);
-                i++;
-            }
+                //if(system_file_delete(&ch376->context, ch376->current_file))
+                system_file_close(&ch376->context, ch376->current_file);
 
-            if (ch376->cmd_data.CMD_FileName[i] != 0)
-            {
-                trim_file_name(&ch376->cmd_data.CMD_FileName[i], fixed_file_name);
-
-                if(ch376->current_file)
+                if(system_file_delete(&ch376->context, ch376->dir_pattern, ch376->current_dir_lock))
                 {
-                    system_file_close(&ch376->context, ch376->current_file);
-                    ch376->current_file = (CH376_FILE)0;
+                    dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_ERASE] file deleted\n");
+
+                    ch376->interface_status = 127;
+                    ch376->command_status = CH376_INT_SUCCESS;
+                }
+                else
+                {
+                    dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_ERASE] file could not be deleted\n");
+
+                    ch376->interface_status = 0;
+                    ch376->command_status = CH376_RET_ABORT;
                 }
 
-                if (ch376->current_file_is_directory)
-                    file_erased = system_directory_delete(&ch376->context, ch376->current_dir_lock);
-                else
-                    file_erased = system_file_delete(&ch376->context, fixed_file_name, ch376->current_dir_lock);
+                // success or not, current_file is not valid anymore
+                ch376->current_file = (CH376_FILE)0;
             }
-
-            if (file_erased)
+            else if(!system_is_root_dir(&ch376->context, ch376->current_dir_lock, ch376->root_dir_lock))
             {
-                dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_ERASE] file or directory deleted: %s\n", &ch376->cmd_data.CMD_FileName[i]);
+                if(system_directory_delete(&ch376->context, ch376->current_dir_lock))
+                {
+                    dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_ERASE] directory deleted\n");
 
-                ch376->interface_status = 127;
-                ch376->command_status = CH376_INT_SUCCESS;
+                    ch376->interface_status = 127;
+                    ch376->command_status = CH376_INT_SUCCESS;
+                }
+                else
+                {
+                    dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_ERASE] directory could not be deleted\n");
+
+                    ch376->interface_status = 0;
+                    ch376->command_status = CH376_RET_ABORT;
+                }
+
+                // success or not, current_dir_lock is not valid anymore, go back to root by default
+                ch376->current_dir_lock = system_clone_directory_lock(&ch376->context, ch376->root_dir_lock);
             }
             else
             {
-                dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_ERASE] file or directory could not be deleted: %s\n", &ch376->cmd_data.CMD_FileName[i]);
+                dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_ERASE] no operation possible (file or directory not opened)\n");
 
                 ch376->interface_status = 0;
                 ch376->command_status = CH376_ERR_MISS_FILE;
@@ -2460,7 +2535,7 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data)
 
     case CH376_CMD_READ_VAR32:
         // dbg_printf("[WRITE][DATA][CH376_CMD_GET_FILE_SIZE] got &%02x byte\n", data);
-        if (data == CH376_VAR_FILE_SIZE)
+        if(data == CH376_VAR_FILE_SIZE)
         {
             CH376_S32 file_size = system_get_file_size(&ch376->context, ch376->current_file);
 
@@ -2477,7 +2552,7 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data)
             // Lignes suivantes utiles?
             ch376->interface_status = 127;
             ch376->command_status = CH376_INT_SUCCESS;
-        }
+	}
 	else if(data == CH376_VAR_CURRENT_OFFSET)
         {
             CH376_S32 file_offset = system_get_file_offset(&ch376->context, ch376->current_file);
@@ -2496,8 +2571,8 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data)
             ch376->interface_status = 127;
             ch376->command_status = CH376_INT_SUCCESS;
         }
-        else
-        {
+	else
+	{
             dbg_printf("[WRITE][DATA][CH376_CMD_READ_VAR32] wrong command byte: looking for &68 or &6c, got &%02x\n", data);
 
             ch376->interface_status = 0;
@@ -2553,7 +2628,7 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data)
 
                 if(file_seek_pos >= 0)
                 {
-                    dbg_printf("[WRITE][DATA][CH376_CMD_BYTE_LOCATE] all done: seek operated with success (waiting for data read)\n");
+                    dbg_printf("[WRITE][DATA][CH376_CMD_BYTE_LOCATE] all done: seek operated with success: %d (waiting for data read)\n", file_seek_pos);
 
                     ch376->cmd_data.CMD_FileSeek[0] = (CH376_U8)((file_seek_pos & 0x000000ff) >>  0);
                     ch376->cmd_data.CMD_FileSeek[1] = (CH376_U8)((file_seek_pos & 0x0000ff00) >>  8);
@@ -2563,6 +2638,8 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data)
                     ch376->nb_bytes_in_cmd_data = sizeof(ch376->cmd_data.CMD_FileSeek);
                     ch376->interface_status = 127;
                     ch376->command_status = CH376_INT_SUCCESS;
+
+                    ch376->current_pos = file_seek_pos;
                 }
                 else
                 {
@@ -2584,6 +2661,9 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data)
             if(ch376->nb_bytes_in_cmd_data != ch376->pos_rw_in_cmd_data)
             {
                 raw[ch376->pos_rw_in_cmd_data] = data;
+
+		if (!ch376->current_file_is_directory)
+                    ++ch376->current_pos;
 
                 dbg_printf("[WRITE][DATA][CH376_CMD_WR_REQ_DATA] write \"%c\" (&%02x) to i/o buffer at position &%02x\n", data, data, ch376->pos_rw_in_cmd_data);
 
@@ -2613,6 +2693,7 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data)
             {
                 ch376->bytes_to_read_write = (ch376->cmd_data.CMD_FileReadWrite[0] <<  0)
                                            | (ch376->cmd_data.CMD_FileReadWrite[1] <<  8);
+                ch376->buffer_read_count = 0; // Init read buffer count (also needed when opendir?)
                 file_read_chunk(ch376);
             }
         }
@@ -2635,14 +2716,18 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data)
                     ch376->nb_bytes_in_cmd_data = (CH376_U8)ch376->bytes_to_read_write;
 
                 ch376->interface_status = 127;
-                ch376->command_status = CH376_INT_SUCCESS;
+                if (ch376->bytes_to_read_write == 1)
+                    ch376->command_status = CH376_INT_DISK_WRITE;
+                else
+                    ch376->command_status = CH376_INT_SUCCESS;
             }
         }
         break;
 
     case CH376_CMD_FILE_CLOSE:
         // Note: close mode is not implemented; size if always updated
-        dbg_printf("[WRITE][DATA][CH376_CMD_FILE_CLOSE] update size: %s\n", ch376->pos_rw_in_cmd_data == 0 ? "no" : "yes");
+        // dbg_printf("[WRITE][DATA][CH376_CMD_FILE_CLOSE] update size: %s\n", ch376->pos_rw_in_cmd_data == 0 ? "no" : "yes");
+        dbg_printf("[WRITE][DATA][CH376_CMD_FILE_CLOSE] update size: %s\n", data == 0 ? "no" : "yes");
         if(ch376->current_file)
         {
             system_file_close(&ch376->context, ch376->current_file);

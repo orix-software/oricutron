@@ -87,7 +87,7 @@ void m6502_reset( struct m6502 *cpu )
   cpu->f_b = 0;
   cpu->f_v = 0;
   cpu->f_n = 0;
-  cpu->pc = (cpu->read( cpu, 0xfffd )<<8) | cpu->read( cpu, 0xfffc );
+  cpu->pc =  cpu->read( cpu, 0xfffc ) | (cpu->read( cpu, 0xfffd )<<8);
   cpu->lastpc = 0;
   cpu->nmi = SDL_FALSE;
   cpu->irq = 0;
@@ -186,20 +186,20 @@ void m6502_reset( struct m6502 *cpu )
 #define BADDR_ZP  baddr = cpu->read( cpu, cpu->pc )
 #define BADDR_ZPX baddr = (cpu->read( cpu, cpu->pc ) + cpu->x)&0xff
 #define BADDR_ZPY baddr = (cpu->read( cpu, cpu->pc ) + cpu->y)&0xff
-#define BADDR_ABS baddr = (cpu->read( cpu, cpu->pc+1 )<<8) | cpu->read( cpu, cpu->pc )
-#define BADDR_ABX baddr = ((cpu->read( cpu, cpu->pc+1 )<<8) | cpu->read( cpu, cpu->pc ))+cpu->x
-#define BADDR_ABY baddr = ((cpu->read( cpu, cpu->pc+1 )<<8) | cpu->read( cpu, cpu->pc ))+cpu->y
-#define BADDR_ZIX baddr = (unsigned char)(cpu->read( cpu, cpu->pc )+cpu->x); baddr = (cpu->read( cpu, baddr+1 )<<8) | cpu->read( cpu, baddr )
-#define BADDR_ZIY baddr = cpu->read( cpu, cpu->pc ); baddr = ((cpu->read( cpu, baddr+1 )<<8) | cpu->read( cpu, baddr ))+cpu->y
+#define BADDR_ABS baddr =  cpu->read( cpu, cpu->pc ) | (cpu->read( cpu, cpu->pc+1 )<<8)
+#define BADDR_ABX baddr = (cpu->read( cpu, cpu->pc ) | (cpu->read( cpu, cpu->pc+1 )<<8))+cpu->x
+#define BADDR_ABY baddr = (cpu->read( cpu, cpu->pc ) | (cpu->read( cpu, cpu->pc+1 )<<8))+cpu->y
+#define BADDR_ZIX baddr = (unsigned char)(cpu->read( cpu, cpu->pc )+cpu->x); baddr = cpu->read( cpu, baddr ) | (cpu->read( cpu, baddr+1 )<<8)
+#define BADDR_ZIY baddr = cpu->read( cpu, cpu->pc ); baddr = (cpu->read( cpu, baddr ) | (cpu->read( cpu, baddr+1 )<<8))+cpu->y
 
 #define NBADDR_ZP  baddr = cpu->read( cpu, cpu->calcpc+1 )
 #define NBADDR_ZPX baddr = (cpu->read( cpu, cpu->calcpc+1 ) + cpu->x)&0xff
 #define NBADDR_ZPY baddr = (cpu->read( cpu, cpu->calcpc+1 ) + cpu->y)&0xff
-#define NBADDR_ABS baddr = (cpu->read( cpu, cpu->calcpc+2 )<<8) | cpu->read( cpu, cpu->calcpc+1 )
-#define NBADDR_ABX baddr = ((cpu->read( cpu, cpu->calcpc+2 )<<8) | cpu->read( cpu, cpu->calcpc+1 ))+cpu->x
-#define NBADDR_ABY baddr = ((cpu->read( cpu, cpu->calcpc+2 )<<8) | cpu->read( cpu, cpu->calcpc+1 ))+cpu->y
-#define NBADDR_ZIX baddr = (unsigned char)(cpu->read( cpu, cpu->calcpc+1 )+cpu->x); baddr = (cpu->read( cpu, baddr+1 )<<8) | cpu->read( cpu, baddr )
-#define NBADDR_ZIY baddr = cpu->read( cpu, cpu->calcpc+1 ); baddr = ((cpu->read( cpu, baddr+1 )<<8) | cpu->read( cpu, baddr ))+cpu->y
+#define NBADDR_ABS baddr = cpu->read( cpu, cpu->calcpc+1 ) | (cpu->read( cpu, cpu->calcpc+2 )<<8)
+#define NBADDR_ABX baddr = (cpu->read( cpu, cpu->calcpc+1 ) | (cpu->read( cpu, cpu->calcpc+2 )<<8))+cpu->x
+#define NBADDR_ABY baddr = (cpu->read( cpu, cpu->calcpc+1 ) | (cpu->read( cpu, cpu->calcpc+2 )<<8))+cpu->y
+#define NBADDR_ZIX baddr = (unsigned char)(cpu->read( cpu, cpu->calcpc+1 )+cpu->x); baddr = cpu->read( cpu, baddr ) | (cpu->read( cpu, baddr+1 )<<8)
+#define NBADDR_ZIY baddr = cpu->read( cpu, cpu->calcpc+1 ); baddr = (cpu->read( cpu, baddr ) | (cpu->read( cpu, baddr+1 )<<8))+cpu->y
 
 #define R_BADDR_ZP   NBADDR_ZP; raddr = baddr; rlen = 1
 #define W_BADDR_ZP   NBADDR_ZP; waddr = baddr; wlen = 1
@@ -231,7 +231,7 @@ void m6502_reset( struct m6502 *cpu )
 #define READ_ZP  v=cpu->read( cpu, cpu->read( cpu, cpu->pc++ ) )
 #define READ_ZPX v=cpu->read( cpu, (cpu->read( cpu, cpu->pc++ ) + cpu->x)&0xff )
 #define READ_ZPY v=cpu->read( cpu, (cpu->read( cpu, cpu->pc++ ) + cpu->y)&0xff )
-#define READ_ABS v=cpu->read( cpu, (cpu->read( cpu, cpu->pc+1 )<<8) | cpu->read( cpu, cpu->pc ) ); cpu->pc+=2
+#define READ_ABS v=cpu->read( cpu, cpu->read( cpu, cpu->pc ) |(cpu->read( cpu, cpu->pc+1 )<<8) ); cpu->pc+=2
 #define READ_ABX BADDR_ABX; v = cpu->read( cpu, baddr ); cpu->pc+=2
 #define READ_ABY BADDR_ABY; v = cpu->read( cpu, baddr ); cpu->pc+=2
 #define READ_ZIX BADDR_ZIX; v = cpu->read( cpu, baddr ); cpu->pc++
@@ -239,17 +239,17 @@ void m6502_reset( struct m6502 *cpu )
 
 #define KREAD_ZP  baddr = cpu->read( cpu, cpu->pc++ ); v = cpu->read( cpu, baddr )
 #define KREAD_ZPX baddr = (unsigned char)(cpu->read( cpu, cpu->pc++ )+cpu->x); v = cpu->read( cpu, baddr )
-#define KREAD_ABS baddr = (cpu->read( cpu, cpu->pc+1 )<<8) | cpu->read( cpu, cpu->pc ); v=cpu->read( cpu, baddr ); cpu->pc+=2
+#define KREAD_ABS baddr = cpu->read( cpu, cpu->pc ) | (cpu->read( cpu, cpu->pc+1 )<<8); v=cpu->read( cpu, baddr ); cpu->pc+=2
 
 // .. and for writing
 #define WRITE_ZP(n)  cpu->write( cpu, cpu->read( cpu, cpu->pc++ ), n )
 #define WRITE_ZPX(n) cpu->write( cpu, (cpu->read( cpu, cpu->pc++ ) + cpu->x)&0xff, n )
 #define WRITE_ZPY(n) cpu->write( cpu, (cpu->read( cpu, cpu->pc++ ) + cpu->y)&0xff, n )
-#define WRITE_ABS(n) cpu->write( cpu, (cpu->read( cpu, cpu->pc+1 )<<8) | cpu->read( cpu, cpu->pc ), n ); cpu->pc+=2
-#define WRITE_ABX(n) baddr = ((cpu->read( cpu, cpu->pc+1 )<<8) | cpu->read( cpu, cpu->pc )); cpu->write( cpu, baddr + cpu->x, n ); cpu->pc+=2
-#define WRITE_ABY(n) baddr = ((cpu->read( cpu, cpu->pc+1 )<<8) | cpu->read( cpu, cpu->pc )); cpu->write( cpu, baddr + cpu->y, n ); cpu->pc+=2
-#define WRITE_ZIX(n) baddr = (unsigned char)(cpu->read( cpu, cpu->pc++ )+cpu->x); cpu->write( cpu, (cpu->read( cpu, baddr+1 )<<8) | cpu->read( cpu, baddr ), n )
-#define WRITE_ZIY(n) baddr = cpu->read( cpu, cpu->pc++ ); baddr = (cpu->read( cpu, baddr+1 )<<8) | cpu->read( cpu, baddr ); cpu->write( cpu, baddr + cpu->y, n )
+#define WRITE_ABS(n) cpu->write( cpu, cpu->read( cpu, cpu->pc ) | (cpu->read( cpu, cpu->pc+1 )<<8), n ); cpu->pc+=2
+#define WRITE_ABX(n) baddr = (cpu->read( cpu, cpu->pc ) | (cpu->read( cpu, cpu->pc+1 )<<8)); cpu->write( cpu, baddr + cpu->x, n ); cpu->pc+=2
+#define WRITE_ABY(n) baddr = (cpu->read( cpu, cpu->pc ) | (cpu->read( cpu, cpu->pc+1 )<<8)); cpu->write( cpu, baddr + cpu->y, n ); cpu->pc+=2
+#define WRITE_ZIX(n) baddr = (unsigned char)(cpu->read( cpu, cpu->pc++ )+cpu->x); cpu->write( cpu, cpu->read( cpu, baddr ) | (cpu->read( cpu, baddr+1 )<<8), n )
+#define WRITE_ZIY(n) baddr = cpu->read( cpu, cpu->pc++ ); baddr = cpu->read( cpu, baddr ) | (cpu->read( cpu, baddr+1 )<<8); cpu->write( cpu, baddr + cpu->y, n )
 
 // Page check to see if an offset takes you out of the base page (baddr)
 #define PAGECHECK(n) ( ((baddr+n)&0xff00) != (baddr&0xff00) )
@@ -258,7 +258,7 @@ void m6502_reset( struct m6502 *cpu )
 #define CPAGECHECK ((cpu->baddr&0xff00) != (baddr&0xff00))
 
 // Page check to see if a branch takes you out of the current page
-#define BPAGECHECK ( (cpu->baddr&0xff00) != (cpu->calcpc&0xff00) )
+#define BPAGECHECK ( (cpu->baddr&0xff00) != ((cpu->calcpc+2)&0xff00) )
 
 // Macro to perform branch logic
 #define BRANCH(condition) if( condition ) cpu->pc = cpu->baddr; else cpu->pc++;
@@ -276,7 +276,7 @@ void m6502_reset( struct m6502 *cpu )
 #define PUSHB(n) cpu->write( cpu, (cpu->sp--)+0x100, n )
 #define POPB cpu->read( cpu, (++cpu->sp)+0x100 )
 #define PUSHW(n) PUSHB( n>>8 ); PUSHB( n )
-#define POPW(n)  n = (cpu->read(cpu,((cpu->sp+2)&0xff)+0x100)<<8)|cpu->read(cpu,((cpu->sp+1)&0xff)+0x100); cpu->sp+=2
+#define POPW(n)  n = cpu->read(cpu,((cpu->sp+1)&0xff)+0x100) | (cpu->read(cpu,((cpu->sp+2)&0xff)+0x100)<<8); cpu->sp+=2
 
 
 // Get the number of cycles the NEXT cpu instruction will take
@@ -297,11 +297,11 @@ SDL_bool m6502_set_icycles( struct m6502 *cpu, SDL_bool dobp, char *bpmsg )
   if( cpu->nmi )
   {
     extra = 7;
-    cpu->calcpc = (cpu->read( cpu, 0xfffb )<<8)|cpu->read( cpu, 0xfffa );
+    cpu->calcpc = cpu->read( cpu, 0xfffa ) | (cpu->read( cpu, 0xfffb )<<8);
     cpu->calcint = 2;
   } else if( ( cpu->irq ) && ( cpu->f_i == 0 ) ) {
     extra = 7;
-    cpu->calcpc = (cpu->read( cpu, 0xffff )<<8)|cpu->read( cpu, 0xfffe );
+    cpu->calcpc = cpu->read( cpu, 0xfffe ) | (cpu->read( cpu, 0xffff )<<8);
     cpu->calcint = 1;
   }
   else
@@ -577,7 +577,7 @@ SDL_bool m6502_set_icycles( struct m6502 *cpu, SDL_bool dobp, char *bpmsg )
           break;
 
         case 0x6C: // { "JMP", AM_IND },  // 6C
-          raddr = (cpu->read( cpu, cpu->calcpc+2 )<<8)|cpu->read( cpu, cpu->calcpc+1 );
+          raddr = cpu->read( cpu, cpu->calcpc+1 ) | (cpu->read( cpu, cpu->calcpc+2 )<<8);
           rlen = 2;
           break;
 
@@ -904,7 +904,7 @@ SDL_bool m6502_set_icycles( struct m6502 *cpu, SDL_bool dobp, char *bpmsg )
     case 0xF1: // { "SBC", AM_ZIY },  // F1
     case 0xB3: // { "LAX", AM_ZIY },  // B3 (illegal)
       baddr = cpu->read( cpu, cpu->calcpc+1 );
-      baddr = ((cpu->read( cpu, baddr+1 )<<8) | cpu->read( cpu, baddr ));
+      baddr = (cpu->read( cpu, baddr ) | (cpu->read( cpu, baddr+1 )<<8));
       cpu->icycles = 5;
       cpu->baddr = baddr+cpu->y;
       if( CPAGECHECK ) cpu->icycles++;
@@ -912,7 +912,7 @@ SDL_bool m6502_set_icycles( struct m6502 *cpu, SDL_bool dobp, char *bpmsg )
 
     case 0xBB: // { "LAS", AM_ZIY },  // BB
       baddr = cpu->read( cpu, cpu->calcpc+1 );
-      baddr = ((cpu->read( cpu, baddr+1 )<<8) | cpu->read( cpu, baddr ));
+      baddr = (cpu->read( cpu, baddr ) | (cpu->read( cpu, baddr+1 )<<8));
       cpu->icycles = 4;
       cpu->baddr = baddr+cpu->y;
       if( CPAGECHECK ) cpu->icycles++;
@@ -1003,7 +1003,9 @@ SDL_bool m6502_inst( struct m6502 *cpu )
   {
     PUSHW( cpu->pc );
     PUSHB( MAKEFLAGSBC );
-    cpu->f_d = 0;
+    // [- Assinie: 65C05 only
+    // cpu->f_d = 0;
+    // -]
     if( cpu->calcint == 2 )
     {
       cpu->nmi = SDL_FALSE;
@@ -1024,8 +1026,10 @@ SDL_bool m6502_inst( struct m6502 *cpu )
       PUSHW( (cpu->pc+1) );
       PUSHB( MAKEFLAGS | (1<<4) );   // Set B on the stack
       cpu->f_i = 1;
-      cpu->f_d = 0;
-      cpu->pc = (cpu->read( cpu, 0xffff )<<8) | cpu->read( cpu, 0xfffe );
+      // [- Assinie 65C02 only
+      //cpu->f_d = 0;
+      // -]
+      cpu->pc = cpu->read( cpu, 0xfffe ) | (cpu->read( cpu, 0xffff )<<8);
       break;
 
     case 0x01: // { "ORA", AM_ZIX },  // 01
@@ -1107,8 +1111,16 @@ SDL_bool m6502_inst( struct m6502 *cpu )
       break;
 
     case 0x20: // { "JSR", AM_ABS },  // 20
-      baddr = (cpu->read( cpu, cpu->pc+1 )<<8) | cpu->read( cpu, cpu->pc );
+      // baddr = (cpu->read( cpu, cpu->pc+1 )<<8) | cpu->read( cpu, cpu->pc );
+      // Cf.: http://forum.6502.org/viewtopic.php?f=1&t=7640
+      //      http://forum.6502.org/viewtopic.php?p=95655#p95655
+      // Fetch ADL
+      baddr = cpu->read( cpu, cpu->pc);
+      // Push return address
       PUSHW( (cpu->pc+1) );
+      // Fetch ADH
+      baddr |= (cpu->read( cpu, cpu->pc+1 )<<8);
+      // Jump to subroutine
       cpu->pc = baddr;
       break;
 
@@ -1241,7 +1253,7 @@ SDL_bool m6502_inst( struct m6502 *cpu )
       break;
 
     case 0x4C: // { "JMP", AM_ABS },  // 4C
-      cpu->pc = (cpu->read( cpu, cpu->pc+1 )<<8)|cpu->read( cpu, cpu->pc );
+      cpu->pc = cpu->read( cpu, cpu->pc ) | (cpu->read( cpu, cpu->pc+1 )<<8);
       break;
 
     case 0x4D: // { "EOR", AM_ABS },  // 4D
@@ -1329,8 +1341,8 @@ SDL_bool m6502_inst( struct m6502 *cpu )
       break;
 
     case 0x6C: // { "JMP", AM_IND },  // 6C
-      baddr = (cpu->read( cpu, cpu->pc+1 )<<8)|cpu->read( cpu, cpu->pc );
-      cpu->pc = (cpu->read( cpu, baddr+1 )<<8)|cpu->read( cpu, baddr );
+      baddr = cpu->read( cpu, cpu->pc )|(cpu->read( cpu, cpu->pc+1 )<<8);
+      cpu->pc = cpu->read( cpu, baddr )|(cpu->read( cpu, baddr+1 )<<8);
       break;
 
     case 0x6D: // { "ADC", AM_ABS },  // 6D

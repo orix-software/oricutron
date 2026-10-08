@@ -4,6 +4,8 @@ Release/
 x64/
 *.d
 *.o
+*~
+/**/*.so
 /msvc/**/Debug clang
 /msvc/**/Release clang
 /msvc/**/images
