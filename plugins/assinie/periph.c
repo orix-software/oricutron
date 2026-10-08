@@ -265,6 +265,7 @@ SDL_bool device_reset_all(struct machine *oric)
     oric_bus.irq =  &oric->cpu.irq;
     oric_bus.reset = SDL_TRUE;
     oric_bus.nmi =  SDL_FALSE;
+    oric_bus.mem =  oric->mem;
 
     oric_bus.type =  oric->type;
     oric_bus.drivetype = oric->drivetype;

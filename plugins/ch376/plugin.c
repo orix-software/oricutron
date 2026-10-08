@@ -204,12 +204,12 @@ SDL_bool plugin_write(struct expansion_bus *oric_bus, SDL_bool fBank, unsigned i
     {
         // return userdata[instance].data[--userdata[instance].ptr];
         case 0:
-            ch376_write_data_port(userdata[instance], data);
+            ch376_write_data_port(userdata[instance], data, oric_bus);
             break;
 
         // CH376_ORIC_EXTENSION_COMMAND_PORT
         case 1:
-            ch376_write_command_port(userdata[instance], data);
+            ch376_write_command_port(userdata[instance], data, oric_bus);
             break;
 
         default:
@@ -475,7 +475,7 @@ struct PLUGIN plugin = { "CH376",
                 plugin_reset,
                 plugin_read,
                 plugin_write,
-		NULL,
+                NULL,
                 mon_plugin_update,
                 mon_plugin_store,
                 NULL,

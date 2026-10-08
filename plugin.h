@@ -13,6 +13,8 @@ struct expansion_bus {
     SDL_bool io;
     SDL_bool reset;
     SDL_bool nmi;
+    Uint8 *mem;
+
 
     // Utilitaires
     Uint8 type;

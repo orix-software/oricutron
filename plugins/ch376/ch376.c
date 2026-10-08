@@ -11,6 +11,7 @@
 /*
  Changes:
 
+ 10.06.2025 - Jede: Fix bug when a char is not normalized for FAT32 operation (open, create, delete file/dir)
  10.03.2023 - Assinie: Fix bug : . and .. was reading as right entry. Now, it's skipped
  02.04.2022 - Assinie: Added support for CMD_REAF_VAR32 (GET_FILE_SIZE and CURRENT_OFFSET only)
  01.02.2021 - Assinie: Fix time struct (Linux Only)
@@ -60,6 +61,23 @@ extern struct Library *SysBase;
 #error "FixMe!"
 #endif
 
+
+#include "../../system.h"
+#include "../../6502.h"
+#include "../../via.h"
+#include "../../8912.h"
+#include "../../gui.h"
+#include "../../disk.h"
+#include "../../monitor.h"
+#include "../../6551.h"
+
+
+#include "../../machine.h"
+
+// Pour les fonction de lecture du fichier de configuration
+#include "../../main.h"
+
+#include "plugin.h"
 #include "ch376.h"
 
 /* /// */
@@ -72,19 +90,46 @@ extern struct Library *SysBase;
 // Commands
 #define CH376_CMD_NONE          0x00
 #define CH376_CMD_GET_IC_VER    0x01
+#define CH376_CMD_ENTER_SLEEP   0x03 // Not emulated
+#define CH376_CMD_SET_USB_SPEED 0x04 // Not emulated
+#define CH376_CMD_RESET_ALL     0x05 // Not emulated
 #define CH376_CMD_CHECK_EXIST   0x06
+#define CH376_CMD_GET_REGISTER  0x0a // Not emulated
+#define CH376_CMD_SET_REGISTER  0x0b // Not emulated
 #define CH376_CMD_READ_VAR32    0x0c
-#define CH376_CMD_SET_USB_MODE  0x15
+#define CH376_CMD_WRITE_VAR32   0x0d // Not emulated
+#define CH376_CMD_DELAY_100US   0x0f // Not emulated
+#define CH376_SET_USB_ADDR      0x13 // Not emulated
+#define CH376_CMD_SET_USB_MODE  0x15 // Not emulated
+#define CH376_CMD_TEST_CONNECT  0x16 // Not emulated
+#define CH376_CMD_ABORT_NAK     0x17 // Not emulated
+#define CH376_CMD_SET_EP0_RX    0x18 // Not emulated
+#define CH376_CMD_SET_EP0_TX    0x19 // Not emulated
+#define CH376_CMD_SET_EP1_RX    0x1a // Not emulated
+#define CH376_CMD_SET_EP1_TX    0x1b // Not emulated
+#define CH376_CMD_SET_EP2_RX    0x1c // Not emulated
+#define CH376_CMD_SET_EP2_TX    0x1d // Not emulated
 #define CH376_CMD_GET_STATUS    0x22
+#define CH376_CMD_UNLOCK_USB    0x23 // Not emulated
+#define CH376_DIRTY_BUFFER      0x25 // Not emulated
 #define CH376_CMD_RD_USB_DATA0  0x27
+#define CH376_CMD_RD_USB_DATA_UNLOCK     0x28
+#define CH376_CMD_WR_EP0        0x29 // DATA3
+#define CH376_CMD_WR_EP1        0x2a // DATA5
+#define CH376_CMD_WR_EP2        0x2b // DATA7
+#define CH376_WR_USB_DATA       0x2c
 #define CH376_CMD_WR_REQ_DATA   0x2d
+#define CH376_OFS_DATA          0x2e // Not emulated
 #define CH376_CMD_SET_FILE_NAME 0x2f
+#define CH376_CMD_DISK_CONNECT  0x30 // Not emulated
 #define CH376_CMD_DISK_MOUNT    0x31
 #define CH376_CMD_FILE_OPEN     0x32
 #define CH376_CMD_FILE_ENUM_GO  0x33
 #define CH376_CMD_FILE_CREATE   0x34
 #define CH376_CMD_FILE_ERASE    0x35
 #define CH376_CMD_FILE_CLOSE    0x36
+#define CH376_CMD_DIR_INFO_READ 0x37
+#define CH376_DIR_INFO_SAVE     0x38
 #define CH376_CMD_BYTE_LOCATE   0x39
 #define CH376_CMD_BYTE_READ     0x3a
 #define CH376_CMD_BYTE_RD_GO    0x3b
@@ -93,27 +138,143 @@ extern struct Library *SysBase;
 #define CH376_CMD_DISK_CAPACITY 0x3e
 #define CH376_CMD_DISK_QUERY    0x3f
 #define CH376_CMD_DIR_CREATE    0x40
+#define CH376_CMD_SET_ADDR      0X45
+#define CH376_CMD_GET_DESCR     0x46
+#define CH376_CMD_SET_CONFIG    0x49
+#define CH376_SEC_READ          0x4b
+#define CH376_SEC_WRITE         0x4c
+#define CH376_CMD_AUTO_SETUP    0x4d
+#define CH376_CMD_ISSUE_TKN_X   0x4e
 #define CH376_CMD_DISK_RD_GO    0x55
+#define CH376_DISK_WR_GO        0x57
+#define CH376_DISK_INQUIRY      0x58
+#define CH376_DISK_READY        0x59
+#define CH376_DISK_R_SENSE      0x5a
+#define CH376_RD_DISK_SEC       0x5b
+#define CH376_WR_DISK_SEC       0x5c
+#define CH376_DISK_MAX_LUN      0x5d
 
 #define CH376_ARG_SET_USB_MODE_INVALID  0x00
+#define CH376_USB_MODE_DEVICE_OUTER_FW  0x01
+#define CH376_USB_MODE_DEVICE_INNER_FW  0x02
 #define CH376_ARG_SET_USB_MODE_SD_HOST  0x03
 #define CH376_ARG_SET_USB_MODE_USB_HOST 0x06
+#define CH376_ARG_SET_USB_HOST_RESET_USB_BUS 0x07
 
 // VAR32 offsets
 #define CH376_VAR_FILE_SIZE      0x68
 #define CH376_VAR_CURRENT_OFFSET 0x6c
 
 // Status & errors
-#define CH376_ERR_OPEN_DIR   0x41
-#define CH376_ERR_MISS_FILE  0x42
-#define CH376_ERR_FOUND_NAME 0x43
+#define CH376_ERR_OPEN_DIR     0x41
+#define CH376_ERR_MISS_FILE    0x42
+#define CH376_ERR_FOUND_NAME   0x43
+#define CH376_ERR_DISK_DISCON  0x82
+#define CH376_ERR_LARGE_SECTOR 0x84
+#define CH376_ERR_TYPE_ERROR   0x92
+#define CH376_ERR_BPB_ERROR    0xa1
+#define CH376_ERR_DISK_FULL    0xb1
+#define CH376_ERR_FDT_OVER 	   0xb2
+#define CH376_ERR_FILE_CLOSE   0xb4
 
 #define CH376_RET_SUCCESS 0x51
 #define CH376_RET_ABORT   0x5f
 
-#define CH376_INT_SUCCESS    0x14
-#define CH376_INT_DISK_READ  0x1d
-#define CH376_INT_DISK_WRITE 0x1e
+#define CH376_INT_SUCCESS        0x14
+#define CH376_USB_INT_CONNECT 	 0x15
+#define CH376_USB_INT_DISCONNECT 0x16
+#define CH376_USB_INT_BUF_OVER 	 0x17
+#define CH376_USB_INT_USB_READY  0x18
+#define CH376_INT_DISK_READ      0x1d
+#define CH376_INT_DISK_WRITE     0x1e
+
+/* Basic information of the current system */
+/* Bit 6 is used to indicate the subclass of the USB storage device SubClass-Code; bit 6 is 0 to indicate that the subclass is 6, and bit 6 is 1 to indicate that the subclass is different from 6 */
+/* Bit 5 is used to indicate the USB configuration status in USB device mode and the USB device connection status in USB host mode */
+/* In USB device mode, if bit 5 is 1, the USB configuration is complete, and bits 5 and 0 are not configured */
+/* In USB host mode, if bit 5 is 1, there is a USB device in the USB port, and if bit 5 is 0, there is no USB device in the USB port */
+/* Bit 4 is used to indicate the buffer lock status in USB device mode. Bit 4 being 1 means the USB buffer is locked, and bit 6 being 1 means it has been released */
+/* Other bits are reserved; please do not modify */
+#define VAR_SYS_BASE_INFO           0x20
+
+/* Number of USB transaction operation attempts */
+/* If bit 7 is 0, it will not retry when NAK is received; if bit 7 is 1 and bit 6 is 0, it will retry infinitely upon receiving NAK (you can use the CMD_ABORT_NAK command to abandon the retry), if bit 7 is 1 and bit 6 is 1, it will retry for up to 3 seconds upon receiving NAK */
+/* Bit 5 to Bit 0 represents the number of retry attempts after the timeout expires */
+#define VAR_RETRY_TIMES             0x25
+
+/* Bit indicator in host file mode */
+/* Bit 1 and Bit 0: Indicator of the logical disk's FAT file system, 00-FAT12, 01-FAT16, 10-FAT32, 11-illegal */
+/* Bit 2: Indicates whether the FAT table data in the current buffer has been modified, 0-not modified, 1-modified */
+/* Bit 3: The file length needs to be modified; the current file is appended with data, 0-no modification is not appended, 1-appended and needs to be modified */
+/* Other bits are reserved; please do not modify */
+#define VAR_FILE_BIT_FLAG           0x26
+
+/* Status of disk and file in host file mode */
+/* Bit indicator of the SD card in host file mode */
+#define VAR_SD_BIT_FLAG             0x30
+
+/* Bit 0: SD card version, 0-only supports the first SD version, 1-supports the second SD version */
+/* Bit 1: Auto recognition, 0-SD card, 1-MMC card */
+/* Bit 2: Auto identification, 0-standard capacity SD card, 1-high capacity (HC-SD) SD card */
+/* Bit 4: Timeout for ACMD41 command */
+/* Bit 5: Timeout for CMD1 command */
+/* Bit 6: Timeout for CMD58 command */
+/* Other bits are reserved; please do not modify */
+#define VAR_DISK_STATUS             0x2B
+
+/* The synchronization indicator of the BULK-IN / BULK-OUT endpoint of the USB storage device */
+/* Bit 7: Bulk endpoint synchronization indicator */
+/* Bit 6: Bulk endpoint synchronization indicator */
+/* Bit 5 ~ Bit 0: Must be 0 */
+#define VAR_UDISK_TOGGLE 0x31
+
+/* The logical unit number of the USB storage device */
+/* Bit 7 ~ Bit 4: The current logical unit number of the USB storage device; after CH376 initializes the USB storage device, the default value is to access logical unit #0 */
+/* Bit 3 ~ Bit 0: The maximum logical unit number of the USB storage device; plus 1 equals the number of logical units */
+#define VAR_UDISK_LUN 0x34
+
+/* The number of sectors per cluster of the logical disk */
+#define VAR_SEC_PER_CLUS 0x38
+/* The index number of the current file directory information in the sector */
+#define VAR_FILE_DIR_INDEX 0x3B
+
+/* The sector offset of the current file pointer in the cluster; 0xFF points to the end of the file, the end of the cluster */
+#define VAR_CLUS_SEC_OFS 0x3C
+
+/* 32-bit variable / 4 bytes */
+/* For FAT16 disks, this is the number of sectors occupied by the root directory; for FAT32 disks, this is the starting cluster number of the root directory (total length 32 bits, least significant byte first) */
+#define VAR_DISK_ROOT 0x44
+
+/* The total number of clusters of the logical disk (total length is 32 bits, least significant byte first) */
+#define VAR_DSK_TOTAL_CLUS 0x48
+
+/* The absolute starting sector number of the logical disk LBA (total length 32 bits, least significant byte first) */
+#define VAR_DSK_START_LBA 0x4C
+
+/* The starting LBA of the logical disk data area (total length is 32 bits, least significant byte first) */
+#define VAR_DSK_DAT_START 0x50
+
+/* LBA corresponding to the data of the current data buffer of the disk (total length 32 bits, least significant byte first) */
+#define VAR_LBA_BUFFER 0x54
+
+/* The starting LBA address of the disk currently being read and written (total length is 32 bits, least significant byte first) */
+#define VAR_LBA_CURRENT 0x58
+
+/* The LBA address of the sector where the current file directory information is located (total length 32 bits, least significant byte first) */
+#define VAR_FAT_DIR_LBA 0x5C
+
+/* The starting cluster number of the current file or directory (folder) (total length 32 bits, least significant byte first) */
+#define VAR_START_CLUSTER 0x60
+
+/* The current cluster number of the current file (total length is 32 bits, least significant byte first) */
+#define VAR_CURRENT_CLUST 0x64
+
+/* The length of the current file (total length is 32 bits, least significant byte first) */
+#define VAR_FILE_SIZE 0x68
+
+/* The current file pointer, the byte offset of the current read and write position (total length 32 bits, least significant byte first) */
+#define VAR_CURRENT_OFFSET 0x6C
+
 
 /* /// */
 
@@ -325,6 +486,8 @@ static CH376_S32 system_get_file_offset(CH376_CONTEXT *context, CH376_FILE file)
 #if defined(__MORPHOS__) || defined (__AMIGA__) || defined (__AROS__)
 
 /* /// "Amiga system functions" */
+
+#define DEBUG_CH376 1
 
 #ifdef DEBUG_CH376
 #include <clib/debug_protos.h>
@@ -1101,16 +1264,20 @@ static CH376_S32 system_get_file_offset(CH376_CONTEXT *context, CH376_FILE file)
 static CH376_BOOL system_init_context(CH376_CONTEXT *context, UNUSED void *user_data)
 {
   /* Nothing to do */
+    context = context;
     return CH376_TRUE;
 }
 
 static void system_clean_context(CH376_CONTEXT *context)
 {
+    context = context;
   /* Nothing to do */
 }
 
 static CH376_BOOL system_is_root_dir(CH376_CONTEXT *context, CH376_LOCK dir_lock, CH376_LOCK root_dir)
 {
+    context = context;
+
     if ((dir_lock != (CH376_LOCK) 0) && (root_dir  != (CH376_LOCK) 0))
         return strncmp(dir_lock, root_dir, PATH_MAX) == 0;
 
@@ -1121,6 +1288,8 @@ static CH376_BOOL system_get_disk_info(CH376_CONTEXT *context, CH376_LOCK root_l
 {
     CH376_BOOL got_info = CH376_FALSE;
 
+    context = context;
+
     if(disk_info)
     {
         struct statvfs stats;
@@ -1130,10 +1299,10 @@ static CH376_BOOL system_get_disk_info(CH376_CONTEXT *context, CH376_LOCK root_l
             int64_t total_sector = (stats.f_blocks * stats.f_bsize) / 512;
             // int64_t free_sector = (stats.f_bfree * stats.f_bsize) / 512;
             int64_t free_sector = (stats.f_bavail * stats.f_bsize) / 512;
-	    dbg_printf("\n*** f_frsize=%ld, f_bsize=%ld\n", stats.f_frsize, stats.f_bsize);
-	    dbg_printf(  "*** f_blocks=%ld, f_bsize=%ld\n", stats.f_blocks, stats.f_bsize);
-	    dbg_printf(  "*** f_bfree =%ld, f_bsize=%ld\n", stats.f_bfree , stats.f_bsize);
-	    dbg_printf(  "*** f_bavail=%ld, f_bsize=%ld\n", stats.f_bavail, stats.f_bsize);
+            dbg_printf("\n*** f_frsize=%ld, f_bsize=%ld\n", stats.f_frsize, stats.f_bsize);
+            dbg_printf(  "*** f_blocks=%ld, f_bsize=%ld\n", stats.f_blocks, stats.f_bsize);
+            dbg_printf(  "*** f_bfree =%ld, f_bsize=%ld\n", stats.f_bfree , stats.f_bsize);
+            dbg_printf(  "*** f_bavail=%ld, f_bsize=%ld\n", stats.f_bavail, stats.f_bsize);
 
             disk_info->DISK_TotalSector[0] = (total_sector & 0x000000ff) >>  0;
             disk_info->DISK_TotalSector[1] = (total_sector & 0x0000ff00) >>  8;
@@ -1159,6 +1328,8 @@ static CH376_LOCK system_obtain_directory_lock(CH376_CONTEXT *context, const cha
     CH376_LOCK lock = NULL;
     char *old_dir = NULL;
     struct stat path_stat;
+
+    context = context;
 
     dbg_printf("system_obtain_directory_lock: %s\n", dir_path);
 
@@ -1188,6 +1359,9 @@ static CH376_LOCK system_obtain_directory_lock(CH376_CONTEXT *context, const cha
 
 static void system_release_directory_lock(CH376_CONTEXT *context, CH376_LOCK dir_lock)
 {
+
+    context = context;
+
     if(dir_lock != (CH376_LOCK)0)
     {
         system_free_mem(dir_lock);
@@ -1196,6 +1370,8 @@ static void system_release_directory_lock(CH376_CONTEXT *context, CH376_LOCK dir
 
 static CH376_LOCK system_clone_directory_lock(CH376_CONTEXT *context, CH376_LOCK dir_lock)
 {
+    context = context;
+
     return strdup(dir_lock);
 }
 
@@ -1228,6 +1404,8 @@ static CH376_BOOL system_file_delete(CH376_CONTEXT *context, const char *file_na
     int err;
     char *old_dir = NULL;
 
+    context = context;
+
     if(root_lock)
     {
         if((old_dir = getcwd(NULL, 0)) != NULL)
@@ -1252,6 +1430,8 @@ static CH376_BOOL system_file_delete(CH376_CONTEXT *context, const char *file_na
 
 static CH376_BOOL system_directory_delete(CH376_CONTEXT *context, CH376_LOCK root_lock)
 {
+    context = context;
+
     dbg_printf("system_directory_delete: %s\n", root_lock);
 
     if (root_lock)
@@ -1264,6 +1444,8 @@ static CH376_LOCK system_create_directory(CH376_CONTEXT *context, const char *di
 {
     CH376_LOCK lock = NULL;
     char *old_dir = NULL;
+
+    context = context;
 
     if(root_lock)
     {
@@ -1289,6 +1471,8 @@ static CH376_FILE system_file_open_existing(CH376_CONTEXT *context, const char *
 {
     FILE *fp;
 
+    context = context;
+
     fp = file_open(file_name, root_lock, "rb+");
 
     if (fp == NULL)
@@ -1302,16 +1486,22 @@ static CH376_FILE system_file_open_existing(CH376_CONTEXT *context, const char *
 
 static CH376_FILE system_file_open_new(CH376_CONTEXT *context, const char *file_name, CH376_LOCK root_lock)
 {
+    context = context;
+
     return file_open(file_name, root_lock, "wb+");
 }
 
 static void system_file_close(CH376_CONTEXT *context, CH376_FILE file)
 {
+    context = context;
+
     if (file) fclose(file);
 }
 
 static CH376_S32 system_file_seek(CH376_CONTEXT *context, CH376_FILE file, int pos)
 {
+    context = context;
+
     dbg_printf("system_file_seek trying to seek to position %d\n", pos);
 
     if(file)
@@ -1323,6 +1513,8 @@ static CH376_S32 system_file_seek(CH376_CONTEXT *context, CH376_FILE file, int p
 
 static CH376_S32 system_file_read(CH376_CONTEXT *context, CH376_FILE file, void *buffer, CH376_S32 size)
 {
+    context = context;
+
     dbg_printf("system_file_read trying to read %d bytes (%d, %x)\n", size, file, buffer);
 
     if(file)
@@ -1333,6 +1525,9 @@ static CH376_S32 system_file_read(CH376_CONTEXT *context, CH376_FILE file, void 
 
 static CH376_S32 system_file_write(CH376_CONTEXT *context, CH376_FILE file, void *buffer, CH376_S32 size)
 {
+
+    context = context;
+
     dbg_printf("system_file_write trying to write %d bytes\n", size);
 
     if(file)
@@ -1344,6 +1539,8 @@ static CH376_S32 system_file_write(CH376_CONTEXT *context, CH376_FILE file, void
 static CH376_DIR system_start_examine_directory(CH376_CONTEXT *context, CH376_LOCK dir_lock)
 {
     CH376_DIR fib = system_alloc_mem(sizeof(struct _CH376_DIR));
+
+    context = context;
 
     if(fib)
     {
@@ -1364,6 +1561,8 @@ static CH376_BOOL system_go_examine_directory(CH376_CONTEXT *context, CH376_LOCK
     CH376_U16 dos_adate;
     CH376_U16 dos_mdate, dos_mtime;
     char *old_dir = NULL;
+
+    context = context;
 
     if(dir_lock)
     {
@@ -1460,6 +1659,8 @@ static CH376_BOOL system_go_examine_directory(CH376_CONTEXT *context, CH376_LOCK
 
 static void system_finish_examine_directory(CH376_CONTEXT *context, CH376_DIR fib)
 {
+    context = context;
+
     if (fib)
     {
         closedir(fib->handle);
@@ -1471,6 +1672,8 @@ static CH376_S32 system_get_file_size(CH376_CONTEXT *context, CH376_FILE file)
 {
     CH376_S32 file_size = 0xffffffff;
     struct stat file_stat;
+
+    context = context;
 
     if (file)
     {
@@ -1492,6 +1695,8 @@ static CH376_S32 system_get_file_size(CH376_CONTEXT *context, CH376_FILE file)
 static CH376_S32 system_get_file_offset(CH376_CONTEXT *context, CH376_FILE file)
 {
     CH376_S32 file_offset = 0xffffffff;
+
+    context = context;
 
     if (file)
     {
@@ -1516,14 +1721,65 @@ static CH376_S32 system_get_file_offset(CH376_CONTEXT *context, CH376_FILE file)
 
 /* /// "CH376 private subroutines" */
 
+static int check_fat32_char(char c)
+{
+    // Check FAT32 allowed characters
+    // Return -1 if not allowed, or the character if allowed
+    switch(c)
+    {
+        case '.':
+        //case ' ':
+        case '!':
+        case '#':
+        case '$':
+        case '%':
+        case '&':
+        //case '\'':
+        case '(':
+        case ')':
+        case '{':
+        case '}':
+        case '-':
+        case '@':
+        //case '^':
+        case '_':
+        //case '`':
+        case '~':
+        // case '+':
+        case '0': case '1': case '2':
+        case '3': case '4': case '5':
+        case '6': case '7': case '8':
+        case '9':
+        case 0: // allow EOS in the char
+        case '/': // Allow / for root folder
+            return c;
+
+        // Allowed here to also allow pattern matching
+        case '*':
+            return c;
+
+        // Allow token
+        case '?':
+            return c;
+
+        default:
+            if((c >='A' && c <='Z') || (c >= 128 && c <= 228) || c >= 230)
+                return c;
+
+            return -1;
+    }
+}
+
+
 static char *clone_string(const char *string)
 {
     int l;
     char *s;
 
+
     for(l=0; string[l]!='\0'; l++);
 
-    s = system_alloc_mem(l);
+    s = system_alloc_mem(l+1);
 
     for(l=0; string[l]!='\0'; l++)
         s[l] = string[l];
@@ -1983,7 +2239,7 @@ CH376_U8 ch376_read_data_port(struct ch376 *ch376)
 
 /* /// "CH376 public write command port" */
 
-void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
+void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command, struct expansion_bus *oric_bus)
 {
     dbg_printf(">> [WRITE][COMMAND] Write command &%02x status &%02x\n", command, ch376->command_status);
 
@@ -2024,15 +2280,15 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
         cancel_all_io(ch376);
         // If directory is available, we consider that it's mounted!
         if(ch376->usb_mode == CH376_ARG_SET_USB_MODE_SD_HOST)
-	{
+        {
             ch376->root_dir_lock = system_obtain_directory_lock(&ch376->context, ch376->sdcard_drive_path, NULL);
             // ch376->current_dir_lock = system_clone_directory_lock(&ch376->context, ch376->root_dir_lock);
-	}
+        }
         else if(ch376->usb_mode == CH376_ARG_SET_USB_MODE_USB_HOST)
-	{
+        {
             ch376->root_dir_lock = system_obtain_directory_lock(&ch376->context, ch376->usb_drive_path, NULL);
             // ch376->current_dir_lock = system_clone_directory_lock(&ch376->context, ch376->root_dir_lock);
-	}
+	    }
 
         if(ch376->root_dir_lock)
         {
@@ -2104,8 +2360,35 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
         if(ch376->root_dir_lock)
         {
             int i = 0;
+            int j = 0;
+            for (j = 0; j < 8+3+1+1; j++)
+            {
+                if (ch376->cmd_data.CMD_FileName[j] == '\0')
+                {
+                    // End of string
+                    break;
+                }
 
-            // back to root?
+                if (check_fat32_char(ch376->cmd_data.CMD_FileName[j]) == -1)
+                {
+                    dbg_printf("[PANIC][WRITE][COMMAND][CH376_CMD_FILE_OPEN] error: invalid character in file name : %d/current 6502 PC : 0x%x\n", ch376->cmd_data.CMD_FileName[j], oric_bus->cpu->lastpc);
+                    printf("[PANIC][WRITE][COMMAND][CH376_CMD_FILE_OPEN] error: invalid character in file name : %d/current 6502 PC : 0x%x\n", ch376->cmd_data.CMD_FileName[j], oric_bus->cpu->lastpc);
+                    ch376->interface_status = 0;
+                    ch376->command_status = CH376_RET_ABORT;
+                    break;
+                }
+            }
+
+            if (strlen(ch376->cmd_data.CMD_FileName) > 8+3+1+1) // 8.3 + EOS
+            {
+                printf("[PANIC] String for CH376_CMD_FILE_OPEN is too long : %s\n", ch376->cmd_data.CMD_FileName);
+                dbg_printf("[PANIC][WRITE][COMMAND][CH376_CMD_FILE_OPEN] error: file name too long\n");
+                ch376->interface_status = 0;
+                ch376->command_status = CH376_RET_ABORT;
+                break;
+            }
+
+                // back to root?
             if(ch376->cmd_data.CMD_FileName[i] == '/')
             {
                 dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_OPEN] opening root directory\n");
@@ -2126,17 +2409,17 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
                 // wildcard?
                 if(strchr(ch376->cmd_data.CMD_FileName,'*') || strchr(ch376->cmd_data.CMD_FileName,'?'))
                 {
-		    // Directory?
-		    if (ch376->current_file_is_directory)
-		    {
-                    dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_OPEN] examining directory contents\n");
-                    // Start a directory examine session
-                    system_finish_examine_directory(&ch376->context, ch376->current_directory_browsing);
-                    ch376->current_directory_browsing = system_start_examine_directory(&ch376->context, ch376->current_dir_lock);
-                    normalize_pattern(ch376->cmd_data.CMD_FileName, ch376->dir_pattern);
+                    // Directory?
+                    if (ch376->current_file_is_directory)
+                    {
+                            dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_OPEN] examining directory contents\n");
+                            // Start a directory examine session
+                            system_finish_examine_directory(&ch376->context, ch376->current_directory_browsing);
+                            ch376->current_directory_browsing = system_start_examine_directory(&ch376->context, ch376->current_dir_lock);
+                            normalize_pattern(ch376->cmd_data.CMD_FileName, ch376->dir_pattern);
 
-                    goto file_enum_go;
-		    }
+                            goto file_enum_go;
+                    }
 
                     dbg_printf("[WRITE][COMMAND][CH376_CMD_FILE_OPEN] examining directory contents: not a directory\n");
                     ch376->interface_status = 0;
@@ -2204,6 +2487,34 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
         if(ch376->root_dir_lock)
         {
             int i = 0;
+            int j = 0;
+            for (j=0; j < 8+3+1+1; j++)
+            {
+                if (ch376->cmd_data.CMD_FileName[j] == '\0')
+                {
+                    // End of string
+                    break;
+                }
+
+                if (check_fat32_char(ch376->cmd_data.CMD_FileName[j]) == -1)
+                {
+                    dbg_printf("[PANIC][WRITE][COMMAND][CH376_CMD_FILE_CREATE] error: invalid character in file name : %d\n", ch376->cmd_data.CMD_FileName[j]);
+                    printf("[PANIC][WRITE][COMMAND][CH376_CMD_FILE_CREATE] error: invalid character in file name : %d\n", ch376->cmd_data.CMD_FileName[j]);
+                    ch376->interface_status = 0;
+                    ch376->command_status = CH376_RET_ABORT;
+                    break;
+                }
+            }
+
+            if (strlen(ch376->cmd_data.CMD_FileName) > 8+3+1+1) // 8.3 + EOS
+            {
+                printf("[PANIC] String for CH376_CMD_FILE_CREATE is too long : %s\n", ch376->cmd_data.CMD_FileName);
+                dbg_printf("[PANIC][WRITE][COMMAND][CH376_CMD_FILE_CREATE] error: file name too long\n");
+                ch376->interface_status = 0;
+                ch376->command_status = CH376_RET_ABORT;
+                break;
+            }
+
 
             // back to root?
             if(ch376->cmd_data.CMD_FileName[i] == '/')
@@ -2262,6 +2573,34 @@ void ch376_write_command_port(struct ch376 *ch376, CH376_U8 command)
             CH376_LOCK created_dir_lock;
             CH376_FILE existing_file;
             int i = 0;
+            int j = 0;
+
+            if (ch376->cmd_data.CMD_FileName[j] == '\0')
+            {
+                // End of string
+                break;
+            }
+
+            for (j = 0; j < 8+3+1+1; j++)
+            {
+                if (check_fat32_char(ch376->cmd_data.CMD_FileName[j]) == -1)
+                {
+                    dbg_printf("[PANIC][WRITE][COMMAND][CH376_CMD_FILE_CREATE] error: invalid character in file name : %d\n", ch376->cmd_data.CMD_FileName[j]);
+                    printf("[PANIC][WRITE][COMMAND][CH376_CMD_FILE_CREATE] error: invalid character in file name : %d\n", ch376->cmd_data.CMD_FileName[j]);
+                    ch376->interface_status = 0;
+                    ch376->command_status = CH376_RET_ABORT;
+                    break;
+                }
+            }
+
+            if (strlen(ch376->cmd_data.CMD_FileName) > 8+3+1+1) // 8.3 + EOS
+            {
+                printf("[PANIC] String for CH376_CMD_FILE_CREATE is too long : %s\n", ch376->cmd_data.CMD_FileName);
+                dbg_printf("[PANIC][WRITE][COMMAND][CH376_CMD_FILE_CREATE] error: file name too long\n");
+                ch376->interface_status = 0;
+                ch376->command_status = CH376_RET_ABORT;
+                break;
+            }
 
             // back to root?
             if(ch376->cmd_data.CMD_FileName[i] == '/')
@@ -2522,7 +2861,7 @@ file_enum_go:
 
 /* /// "CH376 public write data port" */
 
-void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data)
+void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data, struct expansion_bus *oric_bus)
 {
   dbg_printf(">> [WRITE][DATA] Write data &%02x status &%02x\n", data, ch376->command_status);
 
@@ -2601,6 +2940,17 @@ void ch376_write_data_port(struct ch376 *ch376, CH376_U8 data)
 
     case CH376_CMD_SET_FILE_NAME:
         dbg_printf("[WRITE][DATA][CH376_CMD_SET_FILE_NAME] got file name character \"%c\" (&%02x) for position %d\n", data, data, ch376->pos_rw_in_cmd_data);
+        // protect against invalid characters
+
+        if (check_fat32_char(data) == -1)
+        {
+            dbg_printf("[PANIC][WRITE][COMMAND][CH376_CMD_SET_FILE_NAME] error: invalid character in file name : %d/current 6502 PC : 0x%x\n", data, oric_bus->cpu->lastpc);
+            printf("[PANIC][WRITE][COMMAND][CH376_CMD_SET_FILE_NAME] error: invalid character in file name : %d/current 6502 PC : 0x%x\n", data, oric_bus->cpu->lastpc);
+            ch376->interface_status = 0;
+            ch376->command_status = CH376_RET_ABORT;
+            break;
+        }
+
         // protect buffer overflow
         if(ch376->pos_rw_in_cmd_data < sizeof(ch376->cmd_data.CMD_FileName))
         {
