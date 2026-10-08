@@ -8,6 +8,7 @@
 #include <ctype.h>
 
 
+
 #if SDL_MAJOR_VERSION == 1
 # ifdef __SPECIFY_SDL_DIR__
 # include <SDL/SDL.h>
@@ -72,17 +73,20 @@ SDL_bool read_config_string( char *buf, char *token, char *dest, int maxlen )
   if( buf[i] != '\'' ) return SDL_TRUE;
   i++;
 
+
+
   // Copy and un-escape the string
-  d=0;
+  d = 0;
   while( buf[i] != '\'' )
   {
+
     if( d >= (maxlen-1) ) break;
     if( !buf[i] ) break;
 
     if( ( buf[i] == '\\' ) && ( buf[i+1] == '\'' ) )
     {
       dest[d++] = '\'';
-      i+=2;
+      i += 2;
       continue;
     }
 

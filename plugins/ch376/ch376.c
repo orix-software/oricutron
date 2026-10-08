@@ -10,6 +10,7 @@
  ** ch376.c *********************************************************/
 /*
  Changes:
+ 21.12.2025 - Add .cfg usb management
  20.12.2025 - Add descr usb management
  02.12.2025 - Jede: Add config ch376 file to specify connected device
  23.11.2025 - Jede: Add usb devices management
@@ -123,7 +124,7 @@ extern struct Library *SysBase;
 #include "plugin.h"
 #include "ch376.h"
 
-extern void parse_usb_cfg(const char *filename, struct usb_device_descriptor_t *device);
+extern int parse_usb_cfg(const char *filename, struct usb_device_descriptor_t *device);
 
 /* /// */
 
@@ -281,10 +282,10 @@ extern void parse_usb_cfg(const char *filename, struct usb_device_descriptor_t *
 /* The number of sectors per cluster of the logical disk */
 #define VAR_SEC_PER_CLUS   0x38
 /* The index number of the current file directory information in the sector */
-#define VAR_FILE_DIR_INDEX 0x3B
+#define VAR_FILE_DIR_INDEX 0x3b
 
 /* The sector offset of the current file pointer in the cluster; 0xFF points to the end of the file, the end of the cluster */
-#define VAR_CLUS_SEC_OFS   0x3C
+#define VAR_CLUS_SEC_OFS   0x3c
 
 /* 32-bit variable / 4 bytes */
 /* For FAT16 disks, this is the number of sectors occupied by the root directory; for FAT32 disks, this is the starting cluster number of the root directory (total length 32 bits, least significant byte first) */
@@ -294,7 +295,7 @@ extern void parse_usb_cfg(const char *filename, struct usb_device_descriptor_t *
 #define VAR_DSK_TOTAL_CLUS 0x48
 
 /* The absolute starting sector number of the logical disk LBA (total length 32 bits, least significant byte first) */
-#define VAR_DSK_START_LBA 0x4C
+#define VAR_DSK_START_LBA 0x4c
 
 /* The starting LBA of the logical disk data area (total length is 32 bits, least significant byte first) */
 #define VAR_DSK_DAT_START 0x50
@@ -306,7 +307,7 @@ extern void parse_usb_cfg(const char *filename, struct usb_device_descriptor_t *
 #define VAR_LBA_CURRENT 0x58
 
 /* The LBA address of the sector where the current file directory information is located (total length 32 bits, least significant byte first) */
-#define VAR_FAT_DIR_LBA 0x5C
+#define VAR_FAT_DIR_LBA 0x5c
 
 /* The starting cluster number of the current file or directory (folder) (total length 32 bits, least significant byte first) */
 #define VAR_START_CLUSTER 0x60
@@ -318,7 +319,7 @@ extern void parse_usb_cfg(const char *filename, struct usb_device_descriptor_t *
 #define VAR_FILE_SIZE 0x68
 
 /* The current file pointer, the byte offset of the current read and write position (total length 32 bits, least significant byte first) */
-#define VAR_CURRENT_OFFSET 0x6C
+#define VAR_CURRENT_OFFSET 0x6c
 
 
 /* /// */
@@ -1806,22 +1807,27 @@ static CH376_S32 system_get_file_offset(CH376_CONTEXT *context, CH376_FILE file)
 SDL_bool config_load_ch376(struct ch376 *ch376, int usb_addr)
 {
     FILE* f;
-
+    char *cfg_filename;
     char* result;
     char line[1024];
-    char main_usb_connected_device[200];
+    char *main_usb_connected_device;
 
-
+    main_usb_connected_device = malloc(200);
     f = fopen(CONFIG_FILE, "r");
     if (!f)
     {
         // cfg file is not mandatory
+        dbg_printf("CH376 plugin : no ch376.cfg files\n");
+        dbg_printf("Default behavior : CH376 usb connected device : USB_MASS_STORAGE_CLASS\n");
+        ch376->device_connected_to_usb_port = USB_MASS_STORAGE_CLASS;
+        ch376->usbdevices[0].USBDEVICE_Is_Connected = USBDEVICE_IS_CONNECTED;
+        parse_usb_cfg("plugins/usb_device_mass_storage.cfg", &ch376->usb_main_device);
         return SDL_TRUE;
     }
 
-    //        ch376->device_connected_to_usb_port = USB_MASS_STORAGE_CLASS;
     while (!feof(f))
     {
+
         result = fgets(line, 1024, f);
         if( result )
         {
@@ -1830,27 +1836,31 @@ SDL_bool config_load_ch376(struct ch376 *ch376, int usb_addr)
 
         if (read_config_string(line, "device_connected_to_usb_port", main_usb_connected_device, 200))
         {
-            if (strcmp(main_usb_connected_device, "USB_MASS_STORAGE_CLASS") == 0)
+            char *equal_sign = strchr(line, '=');
+            if (equal_sign != NULL)
             {
-                ch376->device_connected_to_usb_port = USB_MASS_STORAGE_CLASS;
-                ch376->usbdevices[0].USBDEVICE_Is_Connected = USBDEVICE_IS_CONNECTED;
-                dbg_printf("CH376 usb connected device : USB_MASS_STORAGE_CLASS\n");
-                parse_usb_cfg("plugins/usb_device_mass_storage.cfg", &ch376->usb_main_device);
+                cfg_filename = equal_sign + 1;
             }
-            else if (strcmp(main_usb_connected_device, "USB_MOUSE_CLASS") == 0)
-            {
-                dbg_printf("CH376 usb connected device : USB_MOUSE_CLASS\n");
-                ch376->device_connected_to_usb_port = USB_MOUSE_CLASS;
-                ch376->usbdevices[0].USBDEVICE_Is_Connected = USBDEVICE_IS_CONNECTED;
 
-                parse_usb_cfg("plugins/usb_device_hub.cfg", &ch376->usb_main_device);
-                ch376->hid_mouse_deltax = 0;
-                ch376->hid_mouse_deltay = 0;
+            // is it a .cfg in the parameter ?
+            size_t len = strlen(cfg_filename);
+
+            if (len < 4) return 0; // Trop court pour être .cfg ou .CFG
+            const char *ext = cfg_filename + len - 4;
+            dbg_printf("Found device_connected_to_usb_port line : %s value : %s %d %s\n", line, cfg_filename, len, ext);
+            if (strcmp(ext, ".cfg") == 0)
+            {
+                // It's a .cfg, open it
+                strcpy(main_usb_connected_device, "plugins/");
+                strcat(main_usb_connected_device, cfg_filename);
+                int device_class = parse_usb_cfg(main_usb_connected_device, &ch376->usb_main_device);
+                dbg_printf("[CH376 plugin] found device class for main usb port : %d\n", device_class);
+                ch376->device_connected_to_usb_port = device_class;
+                ch376->usbdevices[0].USBDEVICE_Is_Connected = USBDEVICE_IS_CONNECTED;
             }
-            // Default is mass storage
             else
             {
-                dbg_printf("CH376 usb connected device : USB_MASS_STORAGE_CLASS\n");
+                dbg_printf("[CH376 plugin] Default behavior : CH376 usb connected device : USB_MASS_STORAGE_CLASS\n");
                 ch376->device_connected_to_usb_port = USB_MASS_STORAGE_CLASS;
                 ch376->usbdevices[0].USBDEVICE_Is_Connected = USBDEVICE_IS_CONNECTED;
                 parse_usb_cfg("plugins/usb_device_mass_storage.cfg", &ch376->usb_main_device);
@@ -2336,7 +2346,7 @@ int return_index_from_usb_address(struct ch376 *ch376)
     {
         return 0xFF;
     }
-
+    return 0;
 }
 
 /* /// "CH376 public read command port" */
